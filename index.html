@@ -77,6 +77,38 @@
   input#latin:focus {
     border-color: var(--accent);
   }
+  .keyboard {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem;
+    margin-top: .6rem;
+  }
+  .key {
+    font-family: inherit;
+    font-size: 1.1rem;
+    padding: .45rem .7rem;
+    border-radius: .45rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--ink);
+    cursor: pointer;
+    line-height: 1;
+  }
+  .key:hover {
+    border-color: var(--accent);
+  }
+  .key:active {
+    transform: translateY(1px);
+  }
+  .key.shift {
+    color: var(--muted);
+    font-size: .95rem;
+  }
+  .key.shift.active {
+    background: var(--accent);
+    color: var(--card);
+    border-color: var(--accent);
+  }
   .output-card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -187,6 +219,14 @@
     <div>
       <label for="latin">Latin</label>
       <input id="latin" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Vesna" autofocus>
+      <div class="keyboard" id="keyboard">
+        <button type="button" class="key shift" id="shiftKey" aria-pressed="false" title="Capitalize next letter">⇧ Shift</button>
+        <button type="button" class="key" data-letter="č">č</button>
+        <button type="button" class="key" data-letter="ć">ć</button>
+        <button type="button" class="key" data-letter="đ">đ</button>
+        <button type="button" class="key" data-letter="š">š</button>
+        <button type="button" class="key" data-letter="ž">ž</button>
+      </div>
     </div>
 
     <div>
@@ -266,6 +306,38 @@
 
   input.addEventListener('input', render);
   render();
+
+  // On-screen keyboard for the accented letters a US keyboard can't type
+  // directly (č ć đ š ž — dž is then just d + ž). Shift is momentary,
+  // like a mobile keyboard: it capitalizes the next key press and resets.
+  const shiftKey = document.getElementById('shiftKey');
+  let shiftActive = false;
+
+  function setShift(active) {
+    shiftActive = active;
+    shiftKey.classList.toggle('active', active);
+    shiftKey.setAttribute('aria-pressed', String(active));
+  }
+
+  shiftKey.addEventListener('click', () => setShift(!shiftActive));
+
+  function insertAtCursor(el, text) {
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    const pos = start + text.length;
+    el.selectionStart = el.selectionEnd = pos;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.focus();
+  }
+
+  for (const key of document.querySelectorAll('.key[data-letter]')) {
+    key.addEventListener('click', () => {
+      const letter = key.dataset.letter;
+      insertAtCursor(input, shiftActive ? letter.toUpperCase() : letter);
+      if (shiftActive) setShift(false);
+    });
+  }
 
   // Official Serbian Latin alphabet order (30 letters, digraphs kept together).
   const ALPHABET = [
