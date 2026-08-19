@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="sr-Latn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Latin → Cyrillic</title>
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --ink: #1c1b19;
+    --muted: #7a766e;
+    --accent: #b23b3b;
+    --card: #ffffff;
+    --border: #e3e0d8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1918;
+      --ink: #f2efe9;
+      --muted: #9a958a;
+      --accent: #e0685f;
+      --card: #242220;
+      --border: #38352f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2.5rem 1.25rem 4rem;
+  }
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    margin: 0 0 .25rem;
+    letter-spacing: -0.01em;
+  }
+  p.sub {
+    color: var(--muted);
+    margin: 0 0 2rem;
+    font-size: .95rem;
+    text-align: center;
+  }
+  .wrap {
+    width: 100%;
+    max-width: 560px;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+  label {
+    display: block;
+    font-size: .8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+    margin-bottom: .5rem;
+  }
+  input#latin {
+    width: 100%;
+    font-size: 1.6rem;
+    padding: .75rem .9rem;
+    border-radius: .6rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--ink);
+    outline: none;
+    font-family: inherit;
+  }
+  input#latin:focus {
+    border-color: var(--accent);
+  }
+  .output-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .6rem;
+    padding: .9rem;
+    min-height: 3.4rem;
+  }
+  #cyrillic {
+    font-size: 2rem;
+    word-break: break-word;
+    min-height: 2.4rem;
+  }
+  #cyrillic:empty::before {
+    content: "…";
+    color: var(--border);
+  }
+  .tiles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+  }
+  .tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .5rem;
+    padding: .4rem .55rem;
+    min-width: 2.4rem;
+  }
+  .tile .lat {
+    font-size: .8rem;
+    color: var(--muted);
+  }
+  .tile .cyr {
+    font-size: 1.3rem;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  footer {
+    margin-top: 3rem;
+    font-size: .78rem;
+    color: var(--muted);
+    text-align: center;
+    max-width: 560px;
+  }
+  footer code {
+    background: var(--card);
+    border: 1px solid var(--border);
+    padding: .05rem .3rem;
+    border-radius: .3rem;
+  }
+</style>
+</head>
+<body>
+  <h1>Latin → Ćirilica</h1>
+  <p class="sub">Type a Serbian word in Latin script — watch it become Cyrillic, letter by letter.</p>
+
+  <div class="wrap">
+    <div>
+      <label for="latin">Latin</label>
+      <input id="latin" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Vesna" autofocus>
+    </div>
+
+    <div>
+      <label>Cyrillic</label>
+      <div class="output-card">
+        <div id="cyrillic"></div>
+      </div>
+    </div>
+
+    <div>
+      <label>Letter by letter</label>
+      <div class="tiles" id="tiles"></div>
+    </div>
+  </div>
+
+  <footer>
+    Digraphs <code>nj</code>, <code>lj</code>, <code>dž</code> are recognized as single Cyrillic letters (њ, љ, џ). Use <code>č ć đ š ž</code> for the accented letters.
+  </footer>
+
+<script>
+  const DIGRAPHS = {
+    'nj': 'њ', 'Nj': 'Њ', 'NJ': 'Њ',
+    'lj': 'љ', 'Lj': 'Љ', 'LJ': 'Љ',
+    'dž': 'џ', 'Dž': 'Џ', 'DŽ': 'Џ'
+  };
+
+  const SINGLES = {
+    a:'а', b:'б', c:'ц', č:'ч', ć:'ћ', d:'д', đ:'ђ', e:'е', f:'ф',
+    g:'г', h:'х', i:'и', j:'ј', k:'к', l:'л', m:'м', n:'н', o:'о',
+    p:'п', r:'р', s:'с', š:'ш', t:'т', u:'у', v:'в', z:'з', ž:'ж',
+    A:'А', B:'Б', C:'Ц', Č:'Ч', Ć:'Ћ', D:'Д', Đ:'Ђ', E:'Е', F:'Ф',
+    G:'Г', H:'Х', I:'И', J:'Ј', K:'К', L:'Л', M:'М', N:'Н', O:'О',
+    P:'П', R:'Р', S:'С', Š:'Ш', T:'Т', U:'У', V:'В', Z:'З', Ž:'Ж'
+  };
+
+  // Splits input into graphemes (digraphs kept together) paired with their Cyrillic equivalent.
+  function graphemes(text) {
+    const out = [];
+    let i = 0;
+    while (i < text.length) {
+      const two = text.substr(i, 2);
+      if (DIGRAPHS[two]) {
+        out.push({ lat: two, cyr: DIGRAPHS[two] });
+        i += 2;
+        continue;
+      }
+      const ch = text[i];
+      out.push({ lat: ch, cyr: SINGLES[ch] !== undefined ? SINGLES[ch] : ch });
+      i += 1;
+    }
+    return out;
+  }
+
+  const input = document.getElementById('latin');
+  const cyrillicEl = document.getElementById('cyrillic');
+  const tilesEl = document.getElementById('tiles');
+
+  function render() {
+    const parts = graphemes(input.value);
+    cyrillicEl.textContent = parts.map(p => p.cyr).join('');
+    tilesEl.innerHTML = '';
+    for (const p of parts) {
+      if (p.lat.trim() === '') continue;
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.innerHTML = `<span class="lat">${p.lat}</span><span class="cyr">${p.cyr}</span>`;
+      tilesEl.appendChild(tile);
+    }
+  }
+
+  input.addEventListener('input', render);
+  render();
+</script>
+</body>
+</html>
