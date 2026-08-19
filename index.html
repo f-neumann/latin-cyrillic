@@ -130,6 +130,53 @@
     padding: .05rem .3rem;
     border-radius: .3rem;
   }
+  details.alphabet {
+    width: 100%;
+  }
+  details.alphabet summary {
+    cursor: pointer;
+    font-size: .85rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding: .5rem 0;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: .35rem;
+  }
+  details.alphabet summary::-webkit-details-marker {
+    display: none;
+  }
+  details.alphabet summary::before {
+    content: "▸";
+    display: inline-block;
+    transition: transform .15s ease;
+  }
+  details.alphabet[open] summary::before {
+    transform: rotate(90deg);
+  }
+  .abc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(4.6rem, 1fr));
+    gap: .5rem;
+    margin-top: .5rem;
+  }
+  .abc-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .5rem;
+    padding: .5rem .3rem;
+    text-align: center;
+  }
+  .abc-card .abc-lat {
+    font-size: .85rem;
+    color: var(--muted);
+  }
+  .abc-card .abc-cyr {
+    font-size: 1.15rem;
+    color: var(--accent);
+    font-weight: 600;
+  }
 </style>
 </head>
 <body>
@@ -153,10 +200,17 @@
       <label>Letter by letter</label>
       <div class="tiles" id="tiles"></div>
     </div>
+
+    <details class="alphabet" id="alphabet">
+      <summary>Show the alphabet</summary>
+      <div class="abc-grid" id="abcGrid"></div>
+    </details>
   </div>
 
   <footer>
     Digraphs <code>nj</code>, <code>lj</code>, <code>dž</code> are recognized as single Cyrillic letters (њ, љ, џ). Use <code>č ć đ š ž</code> for the accented letters.
+    ·
+    <a href="#alphabet">Link to alphabet</a>
   </footer>
 
 <script>
@@ -212,6 +266,36 @@
 
   input.addEventListener('input', render);
   render();
+
+  // Official Serbian Latin alphabet order (30 letters, digraphs kept together).
+  const ALPHABET = [
+    ['A','a'], ['B','b'], ['C','c'], ['Č','č'], ['Ć','ć'], ['D','d'], ['Dž','dž'],
+    ['Đ','đ'], ['E','e'], ['F','f'], ['G','g'], ['H','h'], ['I','i'], ['J','j'],
+    ['K','k'], ['L','l'], ['Lj','lj'], ['M','m'], ['N','n'], ['Nj','nj'], ['O','o'],
+    ['P','p'], ['R','r'], ['S','s'], ['Š','š'], ['T','t'], ['U','u'], ['V','v'],
+    ['Z','z'], ['Ž','ž']
+  ];
+
+  const abcGrid = document.getElementById('abcGrid');
+  for (const [upper, lower] of ALPHABET) {
+    const cyrUpper = graphemes(upper).map(p => p.cyr).join('');
+    const cyrLower = graphemes(lower).map(p => p.cyr).join('');
+    const card = document.createElement('div');
+    card.className = 'abc-card';
+    card.innerHTML = `<div class="abc-lat">${upper} ${lower}</div><div class="abc-cyr">${cyrUpper} ${cyrLower}</div>`;
+    abcGrid.appendChild(card);
+  }
+
+  // Support linking directly to an open alphabet section, e.g. #alphabet
+  const alphabetDetails = document.getElementById('alphabet');
+  function syncAlphabetFromHash() {
+    if (location.hash === '#alphabet') {
+      alphabetDetails.open = true;
+      alphabetDetails.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+  window.addEventListener('hashchange', syncAlphabetFromHash);
+  syncAlphabetFromHash();
 </script>
 </body>
 </html>
