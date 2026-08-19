@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Latin → Cyrillic</title>
+<title>Latin ⇄ Cyrillic</title>
 <style>
   :root {
     --bg: #f6f5f2;
@@ -54,6 +54,30 @@
     flex-direction: column;
     gap: 1.25rem;
   }
+  .mode-toggle {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: .6rem;
+    padding: .25rem;
+    background: var(--card);
+    gap: .25rem;
+  }
+  .mode-btn {
+    flex: 1;
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 600;
+    padding: .5rem .5rem;
+    border-radius: .4rem;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .mode-btn.active {
+    background: var(--accent);
+    color: var(--card);
+  }
   label {
     display: block;
     font-size: .8rem;
@@ -81,7 +105,6 @@
     display: flex;
     flex-wrap: wrap;
     gap: .4rem;
-    margin-top: .6rem;
   }
   .key {
     font-family: inherit;
@@ -108,6 +131,35 @@
     background: var(--accent);
     color: var(--card);
     border-color: var(--accent);
+  }
+  .field-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: .5rem;
+  }
+  .field-header label {
+    margin-bottom: 0;
+  }
+  .copy-btn {
+    font-family: inherit;
+    font-size: .75rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+    padding: .3rem .6rem;
+    border-radius: .4rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .copy-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .copy-btn.copied {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .output-card {
     background: var(--card);
@@ -140,11 +192,11 @@
     padding: .4rem .55rem;
     min-width: 2.4rem;
   }
-  .tile .lat {
+  .tile .src {
     font-size: .8rem;
     color: var(--muted);
   }
-  .tile .cyr {
+  .tile .res {
     font-size: 1.3rem;
     color: var(--accent);
     font-weight: 600;
@@ -162,10 +214,10 @@
     padding: .05rem .3rem;
     border-radius: .3rem;
   }
-  details.alphabet {
+  details.collapsible {
     width: 100%;
   }
-  details.alphabet summary {
+  details.collapsible summary {
     cursor: pointer;
     font-size: .85rem;
     font-weight: 600;
@@ -176,15 +228,15 @@
     align-items: center;
     gap: .35rem;
   }
-  details.alphabet summary::-webkit-details-marker {
+  details.collapsible summary::-webkit-details-marker {
     display: none;
   }
-  details.alphabet summary::before {
+  details.collapsible summary::before {
     content: "▸";
     display: inline-block;
     transition: transform .15s ease;
   }
-  details.alphabet[open] summary::before {
+  details.collapsible[open] summary::before {
     transform: rotate(90deg);
   }
   .abc-grid {
@@ -212,25 +264,25 @@
 </style>
 </head>
 <body>
-  <h1>Latin → Ćirilica</h1>
-  <p class="sub">Type a Serbian word in Latin script — watch it become Cyrillic, letter by letter.</p>
+  <h1>Ćirilica ⇄ Latinica</h1>
+  <p class="sub">Type in either script and watch it convert live, letter by letter.</p>
 
   <div class="wrap">
-    <div>
-      <label for="latin">Latin</label>
-      <input id="latin" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Vesna" autofocus>
-      <div class="keyboard" id="keyboard">
-        <button type="button" class="key shift" id="shiftKey" aria-pressed="false" title="Capitalize next letter">⇧ Shift</button>
-        <button type="button" class="key" data-letter="č">č</button>
-        <button type="button" class="key" data-letter="ć">ć</button>
-        <button type="button" class="key" data-letter="đ">đ</button>
-        <button type="button" class="key" data-letter="š">š</button>
-        <button type="button" class="key" data-letter="ž">ž</button>
-      </div>
+    <div class="mode-toggle" id="modeToggle">
+      <button type="button" class="mode-btn active" data-mode="toCyrillic">Latin → Cyrillic</button>
+      <button type="button" class="mode-btn" data-mode="toLatin">Cyrillic → Latin</button>
     </div>
 
     <div>
-      <label>Cyrillic</label>
+      <label for="latin" id="inputLabel">Latin</label>
+      <input id="latin" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Vesna" autofocus>
+    </div>
+
+    <div>
+      <div class="field-header">
+        <label id="outputLabel">Cyrillic</label>
+        <button type="button" class="copy-btn" id="copyCyrillic">Copy</button>
+      </div>
       <div class="output-card">
         <div id="cyrillic"></div>
       </div>
@@ -241,7 +293,12 @@
       <div class="tiles" id="tiles"></div>
     </div>
 
-    <details class="alphabet" id="alphabet">
+    <details class="collapsible" id="keyboardDetails" open>
+      <summary>On-screen keyboard</summary>
+      <div class="keyboard" id="keyboard"></div>
+    </details>
+
+    <details class="collapsible" id="alphabet">
       <summary>Show the alphabet</summary>
       <div class="abc-grid" id="abcGrid"></div>
     </details>
@@ -251,6 +308,8 @@
     Digraphs <code>nj</code>, <code>lj</code>, <code>dž</code> are recognized as single Cyrillic letters (њ, љ, џ). Use <code>č ć đ š ž</code> for the accented letters.
     ·
     <a href="#alphabet">Link to alphabet</a>
+    ·
+    <a href="#" id="copyLink">Copy link to this word</a>
   </footer>
 
 <script>
@@ -269,57 +328,87 @@
     P:'П', R:'Р', S:'С', Š:'Ш', T:'Т', U:'У', V:'В', Z:'З', Ž:'Ж'
   };
 
-  // Splits input into graphemes (digraphs kept together) paired with their Cyrillic equivalent.
-  function graphemes(text) {
+  // Latin -> Cyrillic. Digraphs (nj/lj/dž) are matched first, so they
+  // collapse into a single Cyrillic letter regardless of how they were typed.
+  function latinToCyr(text) {
     const out = [];
     let i = 0;
     while (i < text.length) {
       const two = text.substr(i, 2);
       if (DIGRAPHS[two]) {
-        out.push({ lat: two, cyr: DIGRAPHS[two] });
+        out.push({ src: two, res: DIGRAPHS[two] });
         i += 2;
         continue;
       }
       const ch = text[i];
-      out.push({ lat: ch, cyr: SINGLES[ch] !== undefined ? SINGLES[ch] : ch });
+      out.push({ src: ch, res: SINGLES[ch] !== undefined ? SINGLES[ch] : ch });
       i += 1;
     }
     return out;
   }
 
+  // Cyrillic -> Latin, built by inverting the tables above so there's a
+  // single source of truth for the letter mapping.
+  const CYR_SINGLE_TO_LAT = {};
+  for (const [lat, cyr] of Object.entries(SINGLES)) CYR_SINGLE_TO_LAT[cyr] = lat;
+
+  const CYR_LOWER_DIGRAPH = { 'њ': 'nj', 'љ': 'lj', 'џ': 'dž' };
+  const CYR_UPPER_DIGRAPH_TITLE = { 'Њ': 'Nj', 'Љ': 'Lj', 'Џ': 'Dž' };
+  const CYR_UPPER_DIGRAPH_CAPS  = { 'Њ': 'NJ', 'Љ': 'LJ', 'Џ': 'DŽ' };
+
+  const LATIN_LOWER = ['a','b','c','č','ć','d','đ','e','f','g','h','i','j','k','l','m','n','o','p','r','s','š','t','u','v','z','ž'];
+  const LATIN_UPPER = ['A','B','C','Č','Ć','D','Đ','E','F','G','H','I','J','K','L','M','N','O','P','R','S','Š','T','U','V','Z','Ž'];
+  const LOWER_CYR = new Set(LATIN_LOWER.map(l => SINGLES[l]).concat(['њ', 'љ', 'џ']));
+  const UPPER_CYR = new Set(LATIN_UPPER.map(l => SINGLES[l]).concat(['Њ', 'Љ', 'Џ']));
+
+  // A single Cyrillic digraph letter (Њ/Љ/Џ) is ambiguous on its own — it
+  // could come from a title-case word ("Njegoš") or an all-caps one
+  // ("NJEGOŠ"). Detect all-caps by checking whether the whole input has any
+  // lowercase Cyrillic letters at all.
+  function cyrToLat(text) {
+    const hasLower = [...text].some(ch => LOWER_CYR.has(ch));
+    const hasUpper = [...text].some(ch => UPPER_CYR.has(ch));
+    const allCaps = hasUpper && !hasLower;
+
+    const out = [];
+    for (const ch of text) {
+      if (CYR_LOWER_DIGRAPH[ch]) {
+        out.push({ src: ch, res: CYR_LOWER_DIGRAPH[ch] });
+        continue;
+      }
+      if (CYR_UPPER_DIGRAPH_TITLE[ch]) {
+        out.push({ src: ch, res: allCaps ? CYR_UPPER_DIGRAPH_CAPS[ch] : CYR_UPPER_DIGRAPH_TITLE[ch] });
+        continue;
+      }
+      out.push({ src: ch, res: CYR_SINGLE_TO_LAT[ch] !== undefined ? CYR_SINGLE_TO_LAT[ch] : ch });
+    }
+    return out;
+  }
+
+  // Official Serbian Latin alphabet order (30 letters, digraphs kept together).
+  const ALPHABET = [
+    ['A','a'], ['B','b'], ['C','c'], ['Č','č'], ['Ć','ć'], ['D','d'], ['Dž','dž'],
+    ['Đ','đ'], ['E','e'], ['F','f'], ['G','g'], ['H','h'], ['I','i'], ['J','j'],
+    ['K','k'], ['L','l'], ['Lj','lj'], ['M','m'], ['N','n'], ['Nj','nj'], ['O','o'],
+    ['P','p'], ['R','r'], ['S','s'], ['Š','š'], ['T','t'], ['U','u'], ['V','v'],
+    ['Z','z'], ['Ž','ž']
+  ];
+  const LATIN_KEYS = ALPHABET.map(([, lower]) => lower);
+  const CYRILLIC_KEYS = ALPHABET.map(([, lower]) => latinToCyr(lower).map(p => p.res).join(''));
+
   const input = document.getElementById('latin');
   const cyrillicEl = document.getElementById('cyrillic');
   const tilesEl = document.getElementById('tiles');
+  const inputLabel = document.getElementById('inputLabel');
+  const outputLabel = document.getElementById('outputLabel');
+  const modeButtons = document.querySelectorAll('.mode-btn');
+  const keyboardEl = document.getElementById('keyboard');
 
-  function render() {
-    const parts = graphemes(input.value);
-    cyrillicEl.textContent = parts.map(p => p.cyr).join('');
-    tilesEl.innerHTML = '';
-    for (const p of parts) {
-      if (p.lat.trim() === '') continue;
-      const tile = document.createElement('div');
-      tile.className = 'tile';
-      tile.innerHTML = `<span class="lat">${p.lat}</span><span class="cyr">${p.cyr}</span>`;
-      tilesEl.appendChild(tile);
-    }
+  let mode = new URLSearchParams(location.search).get('mode') === 'toLatin' ? 'toLatin' : 'toCyrillic';
+
+  function convert(text) {
+    return mode === 'toCyrillic' ? latinToCyr(text) : cyrToLat(text);
   }
-
-  input.addEventListener('input', render);
-  render();
-
-  // On-screen keyboard for the accented letters a US keyboard can't type
-  // directly (č ć đ š ž — dž is then just d + ž). Shift is momentary,
-  // like a mobile keyboard: it capitalizes the next key press and resets.
-  const shiftKey = document.getElementById('shiftKey');
-  let shiftActive = false;
-
-  function setShift(active) {
-    shiftActive = active;
-    shiftKey.classList.toggle('active', active);
-    shiftKey.setAttribute('aria-pressed', String(active));
-  }
-
-  shiftKey.addEventListener('click', () => setShift(!shiftActive));
 
   function insertAtCursor(el, text) {
     const start = el.selectionStart ?? el.value.length;
@@ -331,27 +420,137 @@
     el.focus();
   }
 
-  for (const key of document.querySelectorAll('.key[data-letter]')) {
-    key.addEventListener('click', () => {
-      const letter = key.dataset.letter;
-      insertAtCursor(input, shiftActive ? letter.toUpperCase() : letter);
-      if (shiftActive) setShift(false);
+  // Rebuilt whenever the mode changes, since Latin and Cyrillic each need
+  // their own full 30-letter keyboard (only 5 Latin letters are missing from
+  // a US keyboard, but a US/laptop keyboard can't type Cyrillic at all).
+  // Open by default: useful both for a touch-screen visitor with no physical
+  // keyboard, and as a quick way to type accented/Cyrillic letters on a
+  // regular keyboard; collapsible for anyone who already has a native
+  // Serbian/Cyrillic layout and doesn't need it.
+  function renderKeyboard() {
+    const keys = mode === 'toCyrillic' ? LATIN_KEYS : CYRILLIC_KEYS;
+    keyboardEl.innerHTML = '';
+    let shiftActive = false;
+
+    const shiftBtn = document.createElement('button');
+    shiftBtn.type = 'button';
+    shiftBtn.className = 'key shift';
+    shiftBtn.textContent = '⇧ Shift';
+    shiftBtn.title = 'Capitalize next letter';
+    shiftBtn.setAttribute('aria-pressed', 'false');
+    shiftBtn.addEventListener('click', () => {
+      shiftActive = !shiftActive;
+      shiftBtn.classList.toggle('active', shiftActive);
+      shiftBtn.setAttribute('aria-pressed', String(shiftActive));
     });
+    keyboardEl.appendChild(shiftBtn);
+
+    for (const key of keys) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'key';
+      btn.textContent = key;
+      btn.addEventListener('click', () => {
+        const shifted = key.length > 1 ? key[0].toUpperCase() + key.slice(1) : key.toUpperCase();
+        insertAtCursor(input, shiftActive ? shifted : key);
+        if (shiftActive) {
+          shiftActive = false;
+          shiftBtn.classList.remove('active');
+          shiftBtn.setAttribute('aria-pressed', 'false');
+        }
+      });
+      keyboardEl.appendChild(btn);
+    }
   }
 
-  // Official Serbian Latin alphabet order (30 letters, digraphs kept together).
-  const ALPHABET = [
-    ['A','a'], ['B','b'], ['C','c'], ['Č','č'], ['Ć','ć'], ['D','d'], ['Dž','dž'],
-    ['Đ','đ'], ['E','e'], ['F','f'], ['G','g'], ['H','h'], ['I','i'], ['J','j'],
-    ['K','k'], ['L','l'], ['Lj','lj'], ['M','m'], ['N','n'], ['Nj','nj'], ['O','o'],
-    ['P','p'], ['R','r'], ['S','s'], ['Š','š'], ['T','t'], ['U','u'], ['V','v'],
-    ['Z','z'], ['Ž','ž']
-  ];
+  function applyModeChrome() {
+    for (const btn of modeButtons) btn.classList.toggle('active', btn.dataset.mode === mode);
+    if (mode === 'toCyrillic') {
+      inputLabel.textContent = 'Latin';
+      outputLabel.textContent = 'Cyrillic';
+      input.placeholder = 'Vesna';
+    } else {
+      inputLabel.textContent = 'Cyrillic';
+      outputLabel.textContent = 'Latin';
+      input.placeholder = 'Весна';
+    }
+    renderKeyboard();
+  }
+
+  function switchMode(newMode) {
+    if (newMode === mode) return;
+    input.value = cyrillicEl.textContent; // swap: the current result becomes the new source
+    mode = newMode;
+    applyModeChrome();
+    render();
+    input.focus();
+  }
+
+  for (const btn of modeButtons) {
+    btn.addEventListener('click', () => switchMode(btn.dataset.mode));
+  }
+
+  // Shareable link: prefill from ?text= (and ?mode=), then keep the URL in
+  // sync as the user types (without disturbing the #alphabet deep link).
+  const initialText = new URLSearchParams(location.search).get('text');
+  if (initialText) input.value = initialText;
+
+  function syncUrl() {
+    const params = new URLSearchParams();
+    if (input.value) params.set('text', input.value);
+    if (mode === 'toLatin') params.set('mode', 'toLatin');
+    const qs = params.toString();
+    const url = location.pathname + (qs ? `?${qs}` : '') + location.hash;
+    history.replaceState(null, '', url);
+  }
+
+  function render() {
+    const parts = convert(input.value);
+    cyrillicEl.textContent = parts.map(p => p.res).join('');
+    tilesEl.innerHTML = '';
+    for (const p of parts) {
+      if (p.src.trim() === '') continue;
+      const tile = document.createElement('div');
+      tile.className = 'tile';
+      tile.innerHTML = `<span class="src">${p.src}</span><span class="res">${p.res}</span>`;
+      tilesEl.appendChild(tile);
+    }
+    syncUrl();
+  }
+
+  input.addEventListener('input', render);
+  applyModeChrome();
+  render();
+
+  // Copy buttons: brief "Copied!" feedback, then revert.
+  function flashCopied(btn, label) {
+    const original = btn.textContent;
+    btn.textContent = label;
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = original;
+      btn.classList.remove('copied');
+    }, 1200);
+  }
+
+  document.getElementById('copyCyrillic').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    if (!cyrillicEl.textContent) return;
+    await navigator.clipboard.writeText(cyrillicEl.textContent);
+    flashCopied(btn, 'Copied!');
+  });
+
+  document.getElementById('copyLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    const btn = e.currentTarget;
+    await navigator.clipboard.writeText(location.href);
+    flashCopied(btn, 'Link copied!');
+  });
 
   const abcGrid = document.getElementById('abcGrid');
   for (const [upper, lower] of ALPHABET) {
-    const cyrUpper = graphemes(upper).map(p => p.cyr).join('');
-    const cyrLower = graphemes(lower).map(p => p.cyr).join('');
+    const cyrUpper = latinToCyr(upper).map(p => p.res).join('');
+    const cyrLower = latinToCyr(lower).map(p => p.res).join('');
     const card = document.createElement('div');
     card.className = 'abc-card';
     card.innerHTML = `<div class="abc-lat">${upper} ${lower}</div><div class="abc-cyr">${cyrUpper} ${cyrLower}</div>`;
