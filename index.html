@@ -163,6 +163,20 @@
     color: var(--card);
     border-color: var(--accent);
   }
+  .keyboard-row .key.shift {
+    min-width: 4.6rem;
+  }
+  .key.space {
+    min-width: 10rem;
+    flex: 1 1 auto;
+    max-width: 22rem;
+    text-align: center;
+  }
+  .space-row {
+    justify-content: center;
+    width: 100%;
+    margin-top: .1rem;
+  }
   .field-header {
     display: flex;
     align-items: center;
@@ -527,19 +541,38 @@
       return btn;
     }
 
+    function makeSpaceButton() {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'key space';
+      btn.textContent = 'Space';
+      btn.setAttribute('aria-label', 'Space');
+      btn.addEventListener('click', () => insertAtCursor(input, ' '));
+      return btn;
+    }
+
     if (layout === 'qwerty') {
+      // Staggered rows and an embedded, wider Shift key on the bottom row —
+      // both there to look like a physical keyboard, not just a letter grid.
       const rows = mode === 'toCyrillic' ? QWERTY_LATIN_ROWS : QWERTY_CYRILLIC_ROWS;
-      keyboardEl.appendChild(shiftBtn);
-      for (const row of rows) {
+      const rowOffsets = ['0', '1.2rem', '0'];
+      rows.forEach((row, i) => {
         const rowEl = document.createElement('div');
         rowEl.className = 'keyboard-row';
+        rowEl.style.marginLeft = rowOffsets[i] || '0';
+        if (i === rows.length - 1) rowEl.appendChild(shiftBtn);
         for (const key of row) rowEl.appendChild(makeKeyButton(key));
         keyboardEl.appendChild(rowEl);
-      }
+      });
+      const spaceRow = document.createElement('div');
+      spaceRow.className = 'keyboard-row space-row';
+      spaceRow.appendChild(makeSpaceButton());
+      keyboardEl.appendChild(spaceRow);
     } else {
       const keys = mode === 'toCyrillic' ? LATIN_KEYS : CYRILLIC_KEYS;
       keyboardEl.appendChild(shiftBtn);
       for (const key of keys) keyboardEl.appendChild(makeKeyButton(key));
+      keyboardEl.appendChild(makeSpaceButton());
     }
   }
 
