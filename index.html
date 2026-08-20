@@ -101,7 +101,38 @@
   input#latin:focus {
     border-color: var(--accent);
   }
+  .layout-toggle {
+    display: flex;
+    gap: .3rem;
+    margin-bottom: .6rem;
+  }
+  .layout-btn {
+    font-family: inherit;
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    padding: .25rem .55rem;
+    border-radius: .35rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .layout-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
   .keyboard {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem;
+  }
+  .keyboard.qwerty {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .keyboard-row {
     display: flex;
     flex-wrap: wrap;
     gap: .4rem;
@@ -295,6 +326,10 @@
 
     <details class="collapsible" id="keyboardDetails" open>
       <summary>On-screen keyboard</summary>
+      <div class="layout-toggle" id="layoutToggle">
+        <button type="button" class="layout-btn active" data-layout="abc">ABC</button>
+        <button type="button" class="layout-btn" data-layout="qwerty">QWERTY</button>
+      </div>
       <div class="keyboard" id="keyboard"></div>
     </details>
 
@@ -396,6 +431,26 @@
   const LATIN_KEYS = ALPHABET.map(([, lower]) => lower);
   const CYRILLIC_KEYS = ALPHABET.map(([, lower]) => latinToCyr(lower).map(p => p.res).join(''));
 
+  // The real Serbian standard keyboard (QWERTZ-based, Z/Y swapped like
+  // German). Latin keeps Q/W/X/Y as literal, unrepurposed letters (Serbian
+  // doesn't use them, but they're still typable for foreign names); the
+  // digraphs lj/nj/dž have no dedicated key there since two keystrokes
+  // already produce them. Cyrillic can't split a digraph across two
+  // keystrokes, so its layout repurposes those same Q/W/X positions for
+  // the single letters љ/њ/џ instead — everything else lines up 1:1 with
+  // the Latin layout. The Y position has no Serbian Cyrillic letter, so
+  // it's simply dropped from that row.
+  const QWERTY_LATIN_ROWS = [
+    ['q', 'w', 'e', 'r', 't', 'z', 'u', 'i', 'o', 'p', 'š', 'đ', 'ž'],
+    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'č', 'ć'],
+    ['y', 'x', 'c', 'v', 'b', 'n', 'm']
+  ];
+  const QWERTY_CYRILLIC_ROWS = [
+    ['љ', 'њ', 'е', 'р', 'т', 'з', 'у', 'и', 'о', 'п', 'ш', 'ђ', 'ж'],
+    ['а', 'с', 'д', 'ф', 'г', 'х', 'ј', 'к', 'л', 'ч', 'ћ'],
+    ['џ', 'ц', 'в', 'б', 'н', 'м']
+  ];
+
   const input = document.getElementById('latin');
   const cyrillicEl = document.getElementById('cyrillic');
   const tilesEl = document.getElementById('tiles');
@@ -403,8 +458,10 @@
   const outputLabel = document.getElementById('outputLabel');
   const modeButtons = document.querySelectorAll('.mode-btn');
   const keyboardEl = document.getElementById('keyboard');
+  const layoutButtons = document.querySelectorAll('.layout-btn');
 
   let mode = new URLSearchParams(location.search).get('mode') === 'toLatin' ? 'toLatin' : 'toCyrillic';
+  let layout = 'abc';
 
   function convert(text) {
     return mode === 'toCyrillic' ? latinToCyr(text) : cyrToLat(text);
@@ -427,10 +484,15 @@
   // keyboard, and as a quick way to type accented/Cyrillic letters on a
   // regular keyboard; collapsible for anyone who already has a native
   // Serbian/Cyrillic layout and doesn't need it.
+  function shiftedForm(key) {
+    return key.length > 1 ? key[0].toUpperCase() + key.slice(1) : key.toUpperCase();
+  }
+
   function renderKeyboard() {
-    const keys = mode === 'toCyrillic' ? LATIN_KEYS : CYRILLIC_KEYS;
     keyboardEl.innerHTML = '';
+    keyboardEl.classList.toggle('qwerty', layout === 'qwerty');
     let shiftActive = false;
+    const keyButtons = []; // { btn, key } pairs, so Shift can relabel them live
 
     const shiftBtn = document.createElement('button');
     shiftBtn.type = 'button';
@@ -442,24 +504,42 @@
       shiftActive = !shiftActive;
       shiftBtn.classList.toggle('active', shiftActive);
       shiftBtn.setAttribute('aria-pressed', String(shiftActive));
+      for (const { btn, key } of keyButtons) {
+        btn.textContent = shiftActive ? shiftedForm(key) : key;
+      }
     });
-    keyboardEl.appendChild(shiftBtn);
 
-    for (const key of keys) {
+    function makeKeyButton(key) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'key';
       btn.textContent = key;
       btn.addEventListener('click', () => {
-        const shifted = key.length > 1 ? key[0].toUpperCase() + key.slice(1) : key.toUpperCase();
-        insertAtCursor(input, shiftActive ? shifted : key);
+        insertAtCursor(input, shiftActive ? shiftedForm(key) : key);
         if (shiftActive) {
           shiftActive = false;
           shiftBtn.classList.remove('active');
           shiftBtn.setAttribute('aria-pressed', 'false');
+          for (const { btn: b, key: k } of keyButtons) b.textContent = k;
         }
       });
-      keyboardEl.appendChild(btn);
+      keyButtons.push({ btn, key });
+      return btn;
+    }
+
+    if (layout === 'qwerty') {
+      const rows = mode === 'toCyrillic' ? QWERTY_LATIN_ROWS : QWERTY_CYRILLIC_ROWS;
+      keyboardEl.appendChild(shiftBtn);
+      for (const row of rows) {
+        const rowEl = document.createElement('div');
+        rowEl.className = 'keyboard-row';
+        for (const key of row) rowEl.appendChild(makeKeyButton(key));
+        keyboardEl.appendChild(rowEl);
+      }
+    } else {
+      const keys = mode === 'toCyrillic' ? LATIN_KEYS : CYRILLIC_KEYS;
+      keyboardEl.appendChild(shiftBtn);
+      for (const key of keys) keyboardEl.appendChild(makeKeyButton(key));
     }
   }
 
@@ -488,6 +568,15 @@
 
   for (const btn of modeButtons) {
     btn.addEventListener('click', () => switchMode(btn.dataset.mode));
+  }
+
+  for (const btn of layoutButtons) {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.layout === layout) return;
+      layout = btn.dataset.layout;
+      for (const b of layoutButtons) b.classList.toggle('active', b.dataset.layout === layout);
+      renderKeyboard();
+    });
   }
 
   // Shareable link: prefill from ?text= (and ?mode=), then keep the URL in
