@@ -49,7 +49,7 @@
   }
   .wrap {
     width: 100%;
-    max-width: 560px;
+    max-width: 680px;
     display: flex;
     flex-direction: column;
     gap: 1.25rem;
@@ -131,11 +131,18 @@
   .keyboard.qwerty {
     flex-direction: column;
     align-items: flex-start;
+    max-width: 100%;
   }
   .keyboard-row {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: .4rem;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: .2rem;
+  }
+  .keyboard-row .key {
+    flex-shrink: 0;
   }
   .key {
     font-family: inherit;
@@ -165,6 +172,13 @@
   }
   .keyboard-row .key.shift {
     min-width: 4.6rem;
+  }
+  .key.backspace {
+    color: var(--muted);
+    font-size: 1.2rem;
+  }
+  .key.backspace:hover {
+    color: var(--accent);
   }
   .key.space {
     min-width: 10rem;
@@ -251,7 +265,7 @@
     font-size: .78rem;
     color: var(--muted);
     text-align: center;
-    max-width: 560px;
+    max-width: 680px;
   }
   footer code {
     background: var(--card);
@@ -341,8 +355,8 @@
     <details class="collapsible" id="keyboardDetails" open>
       <summary>On-screen keyboard</summary>
       <div class="layout-toggle" id="layoutToggle">
-        <button type="button" class="layout-btn active" data-layout="abc">ABC</button>
-        <button type="button" class="layout-btn" data-layout="qwerty">QWERTY</button>
+        <button type="button" class="layout-btn" data-layout="abc">ABC</button>
+        <button type="button" class="layout-btn active" data-layout="qwerty">QWERTY</button>
       </div>
       <div class="keyboard" id="keyboard"></div>
     </details>
@@ -475,7 +489,7 @@
   const layoutButtons = document.querySelectorAll('.layout-btn');
 
   let mode = new URLSearchParams(location.search).get('mode') === 'toLatin' ? 'toLatin' : 'toCyrillic';
-  let layout = 'abc';
+  let layout = 'qwerty';
 
   function convert(text) {
     return mode === 'toCyrillic' ? latinToCyr(text) : cyrToLat(text);
@@ -487,6 +501,21 @@
     el.value = el.value.slice(0, start) + text + el.value.slice(end);
     const pos = start + text.length;
     el.selectionStart = el.selectionEnd = pos;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.focus();
+  }
+
+  function deleteAtCursor(el) {
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    if (start === end) {
+      if (start === 0) { el.focus(); return; }
+      el.value = el.value.slice(0, start - 1) + el.value.slice(end);
+      el.selectionStart = el.selectionEnd = start - 1;
+    } else {
+      el.value = el.value.slice(0, start) + el.value.slice(end);
+      el.selectionStart = el.selectionEnd = start;
+    }
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.focus();
   }
@@ -551,9 +580,22 @@
       return btn;
     }
 
+    function makeBackspaceButton() {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'key backspace';
+      btn.textContent = '⌫';
+      btn.title = 'Backspace';
+      btn.setAttribute('aria-label', 'Backspace');
+      btn.addEventListener('click', () => deleteAtCursor(input));
+      return btn;
+    }
+
     if (layout === 'qwerty') {
       // Staggered rows and an embedded, wider Shift key on the bottom row —
       // both there to look like a physical keyboard, not just a letter grid.
+      // Backspace sits at the end of the top row, same corner it occupies
+      // on a real keyboard.
       const rows = mode === 'toCyrillic' ? QWERTY_LATIN_ROWS : QWERTY_CYRILLIC_ROWS;
       const rowOffsets = ['0', '1.2rem', '0'];
       rows.forEach((row, i) => {
@@ -562,6 +604,7 @@
         rowEl.style.marginLeft = rowOffsets[i] || '0';
         if (i === rows.length - 1) rowEl.appendChild(shiftBtn);
         for (const key of row) rowEl.appendChild(makeKeyButton(key));
+        if (i === 0) rowEl.appendChild(makeBackspaceButton());
         keyboardEl.appendChild(rowEl);
       });
       const spaceRow = document.createElement('div');
@@ -572,6 +615,7 @@
       const keys = mode === 'toCyrillic' ? LATIN_KEYS : CYRILLIC_KEYS;
       keyboardEl.appendChild(shiftBtn);
       for (const key of keys) keyboardEl.appendChild(makeKeyButton(key));
+      keyboardEl.appendChild(makeBackspaceButton());
       keyboardEl.appendChild(makeSpaceButton());
     }
   }
