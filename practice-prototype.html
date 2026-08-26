@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="sr-Cyrl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trace prototype</title>
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --ink: #1c1b19;
+    --muted: #7a766e;
+    --accent: #b23b3b;
+    --guide: #c7c2b8;
+    --card: #ffffff;
+    --border: #e3e0d8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2.5rem 1.25rem 4rem;
+    gap: 1.25rem;
+  }
+  h1 { font-size: 1.3rem; margin: 0; }
+  p.sub { color: var(--muted); margin: 0; text-align: center; max-width: 30rem; }
+  .letter-picker {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: .5rem;
+    max-width: 36rem;
+  }
+  .letter-btn {
+    font-size: 1.4rem;
+    font-family: inherit;
+    width: 2.6rem;
+    height: 2.6rem;
+    border-radius: .5rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    cursor: pointer;
+  }
+  .letter-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .canvas-wrap {
+    position: relative;
+    width: 320px;
+    height: 320px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    touch-action: none;
+  }
+  .canvas-wrap canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  #guideCanvas { pointer-events: none; }
+  .controls {
+    display: flex;
+    gap: .5rem;
+  }
+  button.action {
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 600;
+    padding: .5rem .9rem;
+    border-radius: .5rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button.action:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>Trace prototype</h1>
+  <p class="sub">Pick a letter, watch it get drawn, then trace over it with your mouse (or finger on touch).</p>
+
+  <div class="letter-picker" id="letterPicker"></div>
+
+  <div class="canvas-wrap">
+    <canvas id="guideCanvas" width="320" height="320"></canvas>
+    <canvas id="traceCanvas" width="320" height="320"></canvas>
+  </div>
+
+  <div class="controls">
+    <button type="button" class="action" id="replayBtn">Replay</button>
+    <button type="button" class="action" id="clearBtn">Clear trace</button>
+  </div>
+
+<script src="letters-data.js"></script>
+<script>
+  // Letters (LETTERS, LETTER_ORDER) and the circlePoints/arcPoints helpers
+  // used to author them live in letters-data.js, shared with qa-letters.html.
+  function densify(points, n) {
+    const cum = [0];
+    for (let i = 1; i < points.length; i++) {
+      const dx = points[i][0] - points[i - 1][0];
+      const dy = points[i][1] - points[i - 1][1];
+      cum.push(cum[i - 1] + Math.hypot(dx, dy));
+    }
+    const total = cum[cum.length - 1];
+    const out = [];
+    for (let i = 0; i <= n; i++) {
+      const target = (i / n) * total;
+      let seg = 0;
+      while (seg < cum.length - 2 && cum[seg + 1] < target) seg++;
+      const segStart = cum[seg], segEnd = cum[seg + 1];
+      const t = segEnd > segStart ? (target - segStart) / (segEnd - segStart) : 0;
+      const p0 = points[seg], p1 = points[seg + 1];
+      out.push([p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t]);
+    }
+    return out;
+  }
+
+  const guideCanvas = document.getElementById('guideCanvas');
+  const guideCtx = guideCanvas.getContext('2d');
+  const traceCanvas = document.getElementById('traceCanvas');
+  const traceCtx = traceCanvas.getContext('2d');
+  const SCALE = 320 / 200;
+
+  function toCanvas([x, y]) {
+    return [x * SCALE, y * SCALE];
+  }
+
+  function clearTrace() {
+    traceCtx.clearRect(0, 0, traceCanvas.width, traceCanvas.height);
+  }
+
+  function drawStrokeSoFar(points, upToIndex) {
+    guideCtx.beginPath();
+    guideCtx.lineJoin = 'round';
+    guideCtx.lineCap = 'round';
+    guideCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--guide');
+    guideCtx.lineWidth = 10;
+    const [sx, sy] = toCanvas(points[0]);
+    guideCtx.moveTo(sx, sy);
+    for (let i = 1; i <= upToIndex; i++) {
+      const [x, y] = toCanvas(points[i]);
+      guideCtx.lineTo(x, y);
+    }
+    guideCtx.stroke();
+  }
+
+  // A generation token invalidates any in-flight rAF/setTimeout callbacks
+  // from a previous animateLetter() call, since they're two different timer
+  // types and can't share one cancel handle.
+  let animGeneration = 0;
+
+  function animateLetter(letter) {
+    const myGeneration = ++animGeneration;
+    guideCtx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
+    clearTrace();
+
+    const strokes = LETTERS[letter].strokes.map(s => densify(s, 60));
+    const msPerStroke = 700;
+    const pauseBetween = 180;
+    let strokeIndex = 0;
+
+    function runStroke() {
+      if (myGeneration !== animGeneration) return;
+      if (strokeIndex >= strokes.length) return;
+      const points = strokes[strokeIndex];
+      const startTime = performance.now();
+
+      function frame(now) {
+        if (myGeneration !== animGeneration) return;
+        const elapsed = now - startTime;
+        const progress = Math.min(1, elapsed / msPerStroke);
+        const upToIndex = Math.floor(progress * (points.length - 1));
+        guideCtx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
+        for (let i = 0; i < strokeIndex; i++) {
+          drawStrokeSoFar(strokes[i], strokes[i].length - 1);
+        }
+        drawStrokeSoFar(points, upToIndex);
+        if (progress < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          strokeIndex++;
+          setTimeout(runStroke, pauseBetween);
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+    runStroke();
+  }
+
+  // Tracing: Pointer Events unify mouse, touch and pen.
+  let tracing = false;
+  traceCtx.lineJoin = 'round';
+  traceCtx.lineCap = 'round';
+  traceCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent');
+  traceCtx.lineWidth = 6;
+
+  traceCanvas.addEventListener('pointerdown', (e) => {
+    tracing = true;
+    traceCanvas.setPointerCapture(e.pointerId);
+    const rect = traceCanvas.getBoundingClientRect();
+    traceCtx.beginPath();
+    traceCtx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+  });
+  traceCanvas.addEventListener('pointermove', (e) => {
+    if (!tracing) return;
+    const rect = traceCanvas.getBoundingClientRect();
+    traceCtx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+    traceCtx.stroke();
+  });
+  traceCanvas.addEventListener('pointerup', () => { tracing = false; });
+  traceCanvas.addEventListener('pointercancel', () => { tracing = false; });
+
+  const letterPicker = document.getElementById('letterPicker');
+  let currentLetter = LETTER_ORDER[0];
+  const letterButtons = [];
+  for (const letter of LETTER_ORDER) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'letter-btn';
+    btn.textContent = letter;
+    btn.dataset.letter = letter;
+    btn.addEventListener('click', () => {
+      for (const b of letterButtons) b.classList.toggle('active', b === btn);
+      currentLetter = letter;
+      animateLetter(currentLetter);
+    });
+    letterPicker.appendChild(btn);
+    letterButtons.push(btn);
+  }
+  letterButtons[0].classList.add('active');
+
+  document.getElementById('replayBtn').addEventListener('click', () => animateLetter(currentLetter));
+  document.getElementById('clearBtn').addEventListener('click', clearTrace);
+
+  animateLetter(currentLetter);
+</script>
+</body>
+</html>
