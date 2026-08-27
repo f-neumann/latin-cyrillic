@@ -114,6 +114,11 @@
     background: var(--card);
     color: var(--ink);
   }
+  .play-status {
+    font-size: .82rem;
+    color: var(--muted);
+    align-self: center;
+  }
 </style>
 </head>
 <body>
@@ -149,7 +154,12 @@
     <button type="button" class="action" id="copyAllBtn">Copy all recorded</button>
   </div>
 
-  <textarea id="output" readonly placeholder="Recorded stroke code will appear here..."></textarea>
+  <label class="toggle" for="output" style="align-self: flex-start; max-width: 36rem; width: 100%;">Stroke code (copied output appears here - or paste someone else's in and press Play)</label>
+  <textarea id="output" placeholder="'Т': { strokes: [ ... ] },"></textarea>
+  <div class="controls">
+    <button type="button" class="action" id="playCodeBtn">Play from code</button>
+    <span class="play-status" id="playStatus"></span>
+  </div>
 
 <script src="letters-data.js"></script>
 <script>
@@ -165,6 +175,7 @@
   const refToggle = document.getElementById('refToggle');
   const straightenToggle = document.getElementById('straightenToggle');
   const output = document.getElementById('output');
+  const playStatus = document.getElementById('playStatus');
 
   // In-memory only: recorded strokes per letter, in logical 0-200 units.
   const recordings = {};
@@ -231,9 +242,11 @@
   // shouldn't let a stale animation keep drawing over the new state.
   let animGeneration = 0;
 
-  function replayRecording() {
-    const stored = recordings[currentLetter] || [];
-    if (!stored.length) return;
+  // Animates an arbitrary stroke list on recCanvas, calling onDone when the
+  // whole sequence finishes (or is cut short by a newer generation taking
+  // over - switching letters, drawing, or starting another playback).
+  function playStrokes(stored, onDone) {
+    if (!stored.length) { if (onDone) onDone(); return; }
     // Densify purely for smooth playback - a straightened 2-point stroke
     // would otherwise jump instantly instead of animating (the exported
     // code keeps the clean 2-point version).
@@ -246,7 +259,7 @@
     function runStroke() {
       if (myGeneration !== animGeneration) return;
       if (strokeIndex >= strokes.length) {
-        renderRecorded(); // back to the static numbered view once done
+        if (onDone) onDone();
         return;
       }
       const points = strokes[strokeIndex];
@@ -269,6 +282,57 @@
       requestAnimationFrame(frame);
     }
     runStroke();
+  }
+
+  function replayRecording() {
+    playStrokes(recordings[currentLetter] || [], renderRecorded);
+  }
+
+  // Parses one or more `'X': { strokes: [...] }` entries out of pasted text
+  // (the exact shape the Copy buttons produce), or - if none are found -
+  // tries the whole input as a bare strokes array, so a plain
+  // `[[[x,y],...], ...]` paste works too. The inner arrays are already
+  // valid JSON (just numbers/brackets), so no eval() is needed.
+  function extractEntries(text) {
+    const entries = [];
+    const re = /'([^']+)'\s*:\s*\{\s*strokes\s*:\s*(\[[\s\S]*?\])\s*\}/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      try {
+        entries.push({ letter: m[1], strokes: JSON.parse(m[2]) });
+      } catch (err) { /* skip a malformed entry, keep scanning */ }
+    }
+    if (entries.length === 0) {
+      try {
+        const strokes = JSON.parse(text.trim());
+        if (Array.isArray(strokes)) entries.push({ letter: null, strokes });
+      } catch (err) { /* nothing parseable */ }
+    }
+    return entries;
+  }
+
+  function playFromCode() {
+    const entries = extractEntries(output.value);
+    if (!entries.length) {
+      playStatus.textContent = "Couldn't find any strokes in that text.";
+      return;
+    }
+    animGeneration++; // stop anything currently playing/drawing
+    recCtx.clearRect(0, 0, SIZE, SIZE);
+    let i = 0;
+    function playNext() {
+      if (i >= entries.length) {
+        playStatus.textContent = entries.length > 1 ? `Done - played ${entries.length} letters.` : 'Done.';
+        return;
+      }
+      const entry = entries[i];
+      playStatus.textContent = entries.length > 1
+        ? `Playing ${entry.letter ? `'${entry.letter}'` : '#' + (i + 1)} (${i + 1}/${entries.length})...`
+        : `Playing${entry.letter ? ` '${entry.letter}'` : ''}...`;
+      i++;
+      playStrokes(entry.strokes, () => setTimeout(playNext, 400));
+    }
+    playNext();
   }
 
   function selectLetter(letter) {
@@ -494,6 +558,7 @@
     const strokes = recordings[currentLetter] || [];
     const code = strokes.length ? fmtLetterEntry(currentLetter, strokes) + ',' : '// (no strokes recorded for this letter yet)';
     output.value = code;
+    playStatus.textContent = '';
     await navigator.clipboard.writeText(code);
     flashCopied(btn);
   });
@@ -505,9 +570,12 @@
       ? entries.map(([letter, strokes]) => fmtLetterEntry(letter, strokes)).join(',\n') + ','
       : '// (no strokes recorded yet)';
     output.value = code;
+    playStatus.textContent = '';
     await navigator.clipboard.writeText(code);
     flashCopied(btn);
   });
+
+  document.getElementById('playCodeBtn').addEventListener('click', playFromCode);
 
   selectLetter(currentLetter);
 </script>
