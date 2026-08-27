@@ -30,6 +30,30 @@ function arcPoints(cx, cy, rx, ry, startDeg, endDeg, n) {
   return pts;
 }
 
+// Resamples a polyline to n+1 evenly-spaced points along its total arc
+// length, so playback speed looks consistent regardless of how densely the
+// original points were spaced (hand-authored vertices vs. raw mouse input).
+function densify(points, n) {
+  const cum = [0];
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i][0] - points[i - 1][0];
+    const dy = points[i][1] - points[i - 1][1];
+    cum.push(cum[i - 1] + Math.hypot(dx, dy));
+  }
+  const total = cum[cum.length - 1];
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const target = (i / n) * total;
+    let seg = 0;
+    while (seg < cum.length - 2 && cum[seg + 1] < target) seg++;
+    const segStart = cum[seg], segEnd = cum[seg + 1];
+    const t = segEnd > segStart ? (target - segStart) / (segEnd - segStart) : 0;
+    const p0 = points[seg], p1 = points[seg + 1];
+    out.push([p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t]);
+  }
+  return out;
+}
+
 const LETTERS = {
   'А': { strokes: [
     [[25, 180], [100, 20]],

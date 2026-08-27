@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="sr-Cyrl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stroke recorder</title>
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --ink: #1c1b19;
+    --muted: #7a766e;
+    --accent: #b23b3b;
+    --guide: #c7c2b8;
+    --card: #ffffff;
+    --border: #e3e0d8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1.25rem 4rem;
+    gap: 1rem;
+  }
+  h1 { font-size: 1.3rem; margin: 0; }
+  p.sub { color: var(--muted); margin: 0; text-align: center; max-width: 34rem; font-size: .9rem; }
+  .letter-picker {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: .4rem;
+    max-width: 36rem;
+  }
+  .letter-btn {
+    font-size: 1.3rem;
+    font-family: inherit;
+    width: 2.4rem;
+    height: 2.4rem;
+    border-radius: .5rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    cursor: pointer;
+    position: relative;
+  }
+  .letter-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .letter-btn.has-recording::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .canvas-wrap {
+    position: relative;
+    width: 320px;
+    height: 320px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    touch-action: none;
+  }
+  .canvas-wrap canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+  #refCanvas, #recCanvas { pointer-events: none; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: .5rem;
+  }
+  button.action {
+    font-family: inherit;
+    font-size: .85rem;
+    font-weight: 600;
+    padding: .5rem .9rem;
+    border-radius: .5rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button.action:hover { border-color: var(--accent); }
+  button.action.copied { border-color: var(--accent); color: var(--accent); }
+  label.toggle {
+    display: flex;
+    align-items: center;
+    gap: .35rem;
+    font-size: .85rem;
+    color: var(--muted);
+  }
+  textarea#output {
+    width: 100%;
+    max-width: 36rem;
+    height: 10rem;
+    font-family: ui-monospace, monospace;
+    font-size: .8rem;
+    padding: .6rem;
+    border-radius: .5rem;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--ink);
+  }
+</style>
+</head>
+<body>
+  <h1>Stroke recorder</h1>
+  <p class="sub">Pick a letter, draw its strokes with the mouse (one drag = one stroke, in order), then copy the result into <code>letters-data.js</code>. The faded gray letter, if any, is the current hand-authored version for reference.</p>
+
+  <div class="letter-picker" id="letterPicker"></div>
+
+  <label class="toggle">
+    <input type="checkbox" id="refToggle" checked>
+    Show existing letter as reference
+  </label>
+
+  <div class="canvas-wrap">
+    <canvas id="refCanvas" width="320" height="320"></canvas>
+    <canvas id="recCanvas" width="320" height="320"></canvas>
+    <canvas id="drawCanvas" width="320" height="320"></canvas>
+  </div>
+
+  <div class="controls">
+    <button type="button" class="action" id="replayBtn">Replay</button>
+    <button type="button" class="action" id="undoBtn">Undo last stroke</button>
+    <button type="button" class="action" id="clearBtn">Clear this letter</button>
+    <button type="button" class="action" id="copyOneBtn">Copy this letter</button>
+    <button type="button" class="action" id="copyAllBtn">Copy all recorded</button>
+  </div>
+
+  <textarea id="output" readonly placeholder="Recorded stroke code will appear here..."></textarea>
+
+<script src="letters-data.js"></script>
+<script>
+  const SIZE = 320;
+  const SCALE = SIZE / 200; // canvas pixels per logical grid unit
+
+  const refCanvas = document.getElementById('refCanvas');
+  const refCtx = refCanvas.getContext('2d');
+  const recCanvas = document.getElementById('recCanvas');
+  const recCtx = recCanvas.getContext('2d');
+  const drawCanvas = document.getElementById('drawCanvas');
+  const drawCtx = drawCanvas.getContext('2d');
+  const refToggle = document.getElementById('refToggle');
+  const output = document.getElementById('output');
+
+  // In-memory only: recorded strokes per letter, in logical 0-200 units.
+  const recordings = {};
+  let currentLetter = LETTER_ORDER[0];
+
+  function toCanvas([x, y]) {
+    return [x * SCALE, y * SCALE];
+  }
+
+  function drawPolyline(ctx, points, color, width) {
+    if (points.length < 2) return;
+    ctx.beginPath();
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    const [sx, sy] = toCanvas(points[0]);
+    ctx.moveTo(sx, sy);
+    for (let i = 1; i < points.length; i++) {
+      const [x, y] = toCanvas(points[i]);
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  function renderReference() {
+    refCtx.clearRect(0, 0, SIZE, SIZE);
+    if (!refToggle.checked) return;
+    const existing = LETTERS[currentLetter];
+    if (!existing) return;
+    for (const stroke of existing.strokes) {
+      drawPolyline(refCtx, stroke, '#e5e1d8', 10);
+    }
+  }
+
+  function renderRecorded() {
+    recCtx.clearRect(0, 0, SIZE, SIZE);
+    const strokes = recordings[currentLetter] || [];
+    strokes.forEach((stroke, i) => {
+      drawPolyline(recCtx, stroke, '#2f6f4f', 5);
+      // number each stroke at its starting point so drawing order is visible
+      const [sx, sy] = toCanvas(stroke[0]);
+      recCtx.fillStyle = '#2f6f4f';
+      recCtx.beginPath();
+      recCtx.arc(sx, sy, 9, 0, Math.PI * 2);
+      recCtx.fill();
+      recCtx.fillStyle = '#fff';
+      recCtx.font = 'bold 11px sans-serif';
+      recCtx.textAlign = 'center';
+      recCtx.textBaseline = 'middle';
+      recCtx.fillText(String(i + 1), sx, sy);
+    });
+  }
+
+  function updatePickerBadges() {
+    for (const btn of letterButtons) {
+      const has = (recordings[btn.dataset.letter] || []).length > 0;
+      btn.classList.toggle('has-recording', has);
+    }
+  }
+
+  // A generation token invalidates any in-flight rAF/setTimeout callbacks
+  // from a previous replay, since switching letters or replaying again
+  // shouldn't let a stale animation keep drawing over the new state.
+  let animGeneration = 0;
+
+  function replayRecording() {
+    const strokes = recordings[currentLetter] || [];
+    if (!strokes.length) return;
+    const myGeneration = ++animGeneration;
+    const msPerStroke = 700;
+    const pauseBetween = 180;
+    let strokeIndex = 0;
+
+    function runStroke() {
+      if (myGeneration !== animGeneration) return;
+      if (strokeIndex >= strokes.length) {
+        renderRecorded(); // back to the static numbered view once done
+        return;
+      }
+      const points = strokes[strokeIndex];
+      const startTime = performance.now();
+
+      function frame(now) {
+        if (myGeneration !== animGeneration) return;
+        const progress = Math.min(1, (now - startTime) / msPerStroke);
+        const upToIndex = Math.floor(progress * (points.length - 1));
+        recCtx.clearRect(0, 0, SIZE, SIZE);
+        for (let i = 0; i < strokeIndex; i++) drawPolyline(recCtx, strokes[i], '#2f6f4f', 5);
+        drawPolyline(recCtx, points.slice(0, upToIndex + 1), '#2f6f4f', 5);
+        if (progress < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          strokeIndex++;
+          setTimeout(runStroke, pauseBetween);
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+    runStroke();
+  }
+
+  function selectLetter(letter) {
+    animGeneration++; // stop any in-flight replay from the previous letter
+    currentLetter = letter;
+    for (const b of letterButtons) b.classList.toggle('active', b.dataset.letter === letter);
+    renderReference();
+    renderRecorded();
+  }
+
+  const letterPicker = document.getElementById('letterPicker');
+  const letterButtons = [];
+  for (const letter of LETTER_ORDER) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'letter-btn';
+    btn.textContent = letter;
+    btn.dataset.letter = letter;
+    btn.addEventListener('click', () => selectLetter(letter));
+    letterPicker.appendChild(btn);
+    letterButtons.push(btn);
+  }
+
+  refToggle.addEventListener('change', renderReference);
+
+  // Recording: each pointer drag is one stroke. Points are captured at a
+  // minimum on-screen distance apart (not every mousemove event) so strokes
+  // don't balloon into hundreds of near-duplicate points, then resampled to
+  // an even spacing with densify() before being stored/exported.
+  let liveStroke = null;
+  const MIN_DIST = 4; // canvas px between captured points
+
+  function toLogical(clientX, clientY) {
+    const rect = drawCanvas.getBoundingClientRect();
+    return [(clientX - rect.left) / SCALE, (clientY - rect.top) / SCALE];
+  }
+
+  const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+
+  drawCanvas.addEventListener('pointerdown', (e) => {
+    animGeneration++; // stop any in-flight replay so it doesn't fight with fresh drawing
+    liveStroke = [toLogical(e.clientX, e.clientY)];
+    drawCanvas.setPointerCapture(e.pointerId);
+  });
+  drawCanvas.addEventListener('pointermove', (e) => {
+    if (!liveStroke) return;
+    const [x, y] = toLogical(e.clientX, e.clientY);
+    const [lx, ly] = liveStroke[liveStroke.length - 1];
+    if (Math.hypot((x - lx) * SCALE, (y - ly) * SCALE) < MIN_DIST) return;
+    liveStroke.push([x, y]);
+    drawCtx.clearRect(0, 0, SIZE, SIZE);
+    drawPolyline(drawCtx, liveStroke, accentColor, 5);
+  });
+  function finishStroke() {
+    if (!liveStroke) return;
+    drawCtx.clearRect(0, 0, SIZE, SIZE);
+    if (liveStroke.length >= 2) {
+      const resampled = densify(liveStroke, Math.max(10, Math.min(50, liveStroke.length)));
+      recordings[currentLetter] = recordings[currentLetter] || [];
+      recordings[currentLetter].push(resampled);
+      renderRecorded();
+      updatePickerBadges();
+    }
+    liveStroke = null;
+  }
+  drawCanvas.addEventListener('pointerup', finishStroke);
+  drawCanvas.addEventListener('pointercancel', finishStroke);
+
+  document.getElementById('replayBtn').addEventListener('click', replayRecording);
+
+  document.getElementById('undoBtn').addEventListener('click', () => {
+    animGeneration++; // stop any in-flight replay before mutating strokes
+    const strokes = recordings[currentLetter];
+    if (strokes && strokes.length) strokes.pop();
+    renderRecorded();
+    updatePickerBadges();
+  });
+
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    animGeneration++;
+    recordings[currentLetter] = [];
+    renderRecorded();
+    updatePickerBadges();
+  });
+
+  function fmtPoint([x, y]) {
+    return `[${Math.round(x * 10) / 10}, ${Math.round(y * 10) / 10}]`;
+  }
+  function fmtStroke(stroke) {
+    return `[${stroke.map(fmtPoint).join(', ')}]`;
+  }
+  function fmtLetterEntry(letter, strokes) {
+    return `  '${letter}': { strokes: [\n${strokes.map(s => '    ' + fmtStroke(s)).join(',\n')}\n  ]}`;
+  }
+
+  function flashCopied(btn) {
+    btn.classList.add('copied');
+    setTimeout(() => btn.classList.remove('copied'), 1000);
+  }
+
+  document.getElementById('copyOneBtn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const strokes = recordings[currentLetter] || [];
+    const code = strokes.length ? fmtLetterEntry(currentLetter, strokes) + ',' : '// (no strokes recorded for this letter yet)';
+    output.value = code;
+    await navigator.clipboard.writeText(code);
+    flashCopied(btn);
+  });
+
+  document.getElementById('copyAllBtn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const entries = Object.entries(recordings).filter(([, strokes]) => strokes.length > 0);
+    const code = entries.length
+      ? entries.map(([letter, strokes]) => fmtLetterEntry(letter, strokes)).join(',\n') + ','
+      : '// (no strokes recorded yet)';
+    output.value = code;
+    await navigator.clipboard.writeText(code);
+    flashCopied(btn);
+  });
+
+  selectLetter(currentLetter);
+</script>
+</body>
+</html>
