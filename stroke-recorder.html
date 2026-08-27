@@ -126,6 +126,10 @@
     <input type="checkbox" id="refToggle" checked>
     Show existing letter as reference
   </label>
+  <label class="toggle">
+    <input type="checkbox" id="straightenToggle" checked>
+    Straighten near-straight strokes
+  </label>
 
   <div class="canvas-wrap">
     <canvas id="refCanvas" width="320" height="320"></canvas>
@@ -135,6 +139,10 @@
 
   <div class="controls">
     <button type="button" class="action" id="replayBtn">Replay</button>
+    <button type="button" class="action" id="straightenLastBtn">Straighten last stroke</button>
+    <button type="button" class="action" id="makeVerticalBtn">Make vertical</button>
+    <button type="button" class="action" id="makeHorizontalBtn">Make horizontal</button>
+    <button type="button" class="action" id="curveifyBtn">Curve-ify last stroke</button>
     <button type="button" class="action" id="undoBtn">Undo last stroke</button>
     <button type="button" class="action" id="clearBtn">Clear this letter</button>
     <button type="button" class="action" id="copyOneBtn">Copy this letter</button>
@@ -155,6 +163,7 @@
   const drawCanvas = document.getElementById('drawCanvas');
   const drawCtx = drawCanvas.getContext('2d');
   const refToggle = document.getElementById('refToggle');
+  const straightenToggle = document.getElementById('straightenToggle');
   const output = document.getElementById('output');
 
   // In-memory only: recorded strokes per letter, in logical 0-200 units.
@@ -223,8 +232,12 @@
   let animGeneration = 0;
 
   function replayRecording() {
-    const strokes = recordings[currentLetter] || [];
-    if (!strokes.length) return;
+    const stored = recordings[currentLetter] || [];
+    if (!stored.length) return;
+    // Densify purely for smooth playback - a straightened 2-point stroke
+    // would otherwise jump instantly instead of animating (the exported
+    // code keeps the clean 2-point version).
+    const strokes = stored.map(s => densify(s, 60));
     const myGeneration = ++animGeneration;
     const msPerStroke = 700;
     const pauseBetween = 180;
@@ -309,13 +322,99 @@
     drawCtx.clearRect(0, 0, SIZE, SIZE);
     drawPolyline(drawCtx, liveStroke, accentColor, 5);
   });
+  // A mouse-drawn "straight" line always wobbles a little; if every point
+  // stays close to the direct line between the stroke's endpoints relative
+  // to how long that line is, it was almost certainly meant to be straight,
+  // so store just the two endpoints instead of the wobble.
+  const STRAIGHTEN_RATIO = 0.035;
+  const STRAIGHTEN_MIN_LENGTH = 10;
+
+  function perpendicularDistance([x, y], [x1, y1], [x2, y2]) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const lineLen = Math.hypot(dx, dy);
+    if (lineLen === 0) return Math.hypot(x - x1, y - y1);
+    return Math.abs(dx * (y1 - y) - (x1 - x) * dy) / lineLen;
+  }
+
+  function isNearlyStraight(points) {
+    const first = points[0], last = points[points.length - 1];
+    const chordLen = Math.hypot(last[0] - first[0], last[1] - first[1]);
+    if (chordLen < STRAIGHTEN_MIN_LENGTH) return false;
+    const maxDev = Math.max(...points.map(p => perpendicularDistance(p, first, last)));
+    return maxDev / chordLen < STRAIGHTEN_RATIO;
+  }
+
+  // Least-squares circle fit (Kasa method): minimize sum (x^2+y^2 + Dx+Ey+F)^2,
+  // which is linear in D, E, F - solved as a 3x3 system via Cramer's rule.
+  function solve3x3(A, b) {
+    function det3(m) {
+      return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+           - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+           + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    }
+    const det = det3(A);
+    if (Math.abs(det) < 1e-9) return null;
+    const withCol = (col, vec) => A.map((row, i) => row.map((v, j) => (j === col ? vec[i] : v)));
+    return [det3(withCol(0, b)) / det, det3(withCol(1, b)) / det, det3(withCol(2, b)) / det];
+  }
+
+  function fitCircle(points) {
+    let Sx = 0, Sy = 0, Sxx = 0, Syy = 0, Sxy = 0, Sxxx = 0, Syyy = 0, Sxyy = 0, Sxxy = 0;
+    for (const [x, y] of points) {
+      Sx += x; Sy += y; Sxx += x * x; Syy += y * y; Sxy += x * y;
+      Sxxx += x * x * x; Syyy += y * y * y; Sxyy += x * y * y; Sxxy += x * x * y;
+    }
+    const n = points.length;
+    const A = [[Sxx, Sxy, Sx], [Sxy, Syy, Sy], [Sx, Sy, n]];
+    const b = [-(Sxxx + Sxyy), -(Sxxy + Syyy), -(Sxx + Syy)];
+    const sol = solve3x3(A, b);
+    if (!sol) return null;
+    const [D, E, F] = sol;
+    const cx = -D / 2, cy = -E / 2;
+    const r2 = cx * cx + cy * cy - F;
+    return r2 > 0 ? { cx, cy, r: Math.sqrt(r2) } : null;
+  }
+
+  // Unwraps a sequence of angles (degrees) so each stays within 180 of the
+  // previous one, giving a continuous trace instead of wrapping at +-180.
+  // This lets the fitted arc reproduce the same sweep direction and total
+  // span the mouse actually traced, not just the shorter of the two ways
+  // between the endpoints.
+  function unwrapAngles(rawDegs) {
+    const out = [rawDegs[0]];
+    for (let i = 1; i < rawDegs.length; i++) {
+      let a = rawDegs[i];
+      const prev = out[i - 1];
+      while (a - prev > 180) a -= 360;
+      while (a - prev < -180) a += 360;
+      out.push(a);
+    }
+    return out;
+  }
+
+  function curveifyLastStroke() {
+    const strokes = recordings[currentLetter];
+    if (!strokes || !strokes.length) return;
+    const raw = strokes[strokes.length - 1];
+    if (raw.length < 5) return; // too few points to fit a meaningful circle
+    const fit = fitCircle(raw);
+    if (!fit) return; // degenerate fit (e.g. nearly-collinear points) - leave as-is
+    const angles = unwrapAngles(raw.map(([x, y]) => Math.atan2(y - fit.cy, x - fit.cx) * 180 / Math.PI));
+    const arc = arcPoints(fit.cx, fit.cy, fit.r, fit.r, angles[0], angles[angles.length - 1], 40);
+    animGeneration++;
+    strokes[strokes.length - 1] = arc;
+    renderRecorded();
+  }
+
   function finishStroke() {
     if (!liveStroke) return;
     drawCtx.clearRect(0, 0, SIZE, SIZE);
     if (liveStroke.length >= 2) {
-      const resampled = densify(liveStroke, Math.max(10, Math.min(50, liveStroke.length)));
+      const stroke = (straightenToggle.checked && isNearlyStraight(liveStroke))
+        ? [liveStroke[0], liveStroke[liveStroke.length - 1]]
+        : densify(liveStroke, Math.max(10, Math.min(50, liveStroke.length)));
       recordings[currentLetter] = recordings[currentLetter] || [];
-      recordings[currentLetter].push(resampled);
+      recordings[currentLetter].push(stroke);
       renderRecorded();
       updatePickerBadges();
     }
@@ -325,6 +424,40 @@
   drawCanvas.addEventListener('pointercancel', finishStroke);
 
   document.getElementById('replayBtn').addEventListener('click', replayRecording);
+
+  // Manual overrides for when the auto-detect heuristic doesn't catch it (or
+  // the intent was specifically a vertical/horizontal line, not just any
+  // straight one) - each replaces the last stroke with two endpoints derived
+  // from its own first/last points.
+  function replaceLastStroke(makeEndpoints) {
+    animGeneration++;
+    const strokes = recordings[currentLetter];
+    if (!strokes || !strokes.length) return;
+    const last = strokes[strokes.length - 1];
+    const first = last[0], end = last[last.length - 1];
+    strokes[strokes.length - 1] = makeEndpoints(first, end);
+    renderRecorded();
+  }
+
+  document.getElementById('straightenLastBtn').addEventListener('click', () => {
+    replaceLastStroke((first, end) => [first, end]);
+  });
+
+  document.getElementById('makeVerticalBtn').addEventListener('click', () => {
+    replaceLastStroke((first, end) => {
+      const x = (first[0] + end[0]) / 2;
+      return [[x, first[1]], [x, end[1]]];
+    });
+  });
+
+  document.getElementById('makeHorizontalBtn').addEventListener('click', () => {
+    replaceLastStroke((first, end) => {
+      const y = (first[1] + end[1]) / 2;
+      return [[first[0], y], [end[0], y]];
+    });
+  });
+
+  document.getElementById('curveifyBtn').addEventListener('click', curveifyLastStroke);
 
   document.getElementById('undoBtn').addEventListener('click', () => {
     animGeneration++; // stop any in-flight replay before mutating strokes
