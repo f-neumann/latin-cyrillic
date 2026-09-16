@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>QA: letter strokes</title>
+<style>
+  body { font-family: sans-serif; background: #f6f5f2; padding: 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  .cell { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 6px; text-align: center; }
+  .cell canvas { display: block; margin: 0 auto; }
+  .cell .label { font-size: 12px; color: #888; margin-top: 4px; }
+  h2 { font-size: 14px; color: #555; margin: 1.5rem 0 .5rem; }
+</style>
+</head>
+<body>
+  <h2>Uppercase (print) &mdash; letters-data.js</h2>
+  <div class="grid" id="grid"></div>
+  <h2>Lowercase (cursive) &mdash; cursive-letters-data.js</h2>
+  <div class="grid" id="cursiveGrid"></div>
+
+<script src="letters-data.js"></script>
+<script src="cursive-letters-data.js"></script>
+<script>
+  const SIZE = 120;
+  const SCALE = SIZE / 200;
+
+  function renderGrid(grid, letters, order) {
+    for (const letter of order) {
+      const entry = letters[letter];
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      const canvas = document.createElement('canvas');
+      canvas.width = SIZE;
+      canvas.height = SIZE;
+      const ctx = canvas.getContext('2d');
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 6;
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+
+      if (entry) {
+        for (const stroke of entry.strokes) {
+          ctx.beginPath();
+          ctx.moveTo(stroke[0][0] * SCALE, stroke[0][1] * SCALE);
+          for (let i = 1; i < stroke.length; i++) {
+            ctx.lineTo(stroke[i][0] * SCALE, stroke[i][1] * SCALE);
+          }
+          ctx.stroke();
+        }
+      }
+
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = entry ? letter : `${letter} (not captured)`;
+      cell.appendChild(canvas);
+      cell.appendChild(label);
+      grid.appendChild(cell);
+    }
+  }
+
+  renderGrid(document.getElementById('grid'), LETTERS, LETTER_ORDER);
+  renderGrid(document.getElementById('cursiveGrid'), CURSIVE_LETTERS, CURSIVE_LETTER_ORDER);
+</script>
+</body>
+</html>

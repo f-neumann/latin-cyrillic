@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stroke recorder</title>
 <style>
+  @font-face {
+    font-family: 'LovelySofia';
+    src: url('fonts/LovelySofiaBG.otf') format('opentype');
+  }
   :root {
     --bg: #f6f5f2;
     --ink: #1c1b19;
@@ -37,8 +41,8 @@
     max-width: 36rem;
   }
   .letter-btn {
-    font-size: 1.3rem;
-    font-family: inherit;
+    font-size: 1.6rem;
+    font-family: 'LovelySofia', cursive;
     width: 2.4rem;
     height: 2.4rem;
     border-radius: .5rem;
@@ -102,6 +106,17 @@
     font-size: .85rem;
     color: var(--muted);
   }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: .8rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .toggle-row-label {
+    font-size: .85rem;
+    color: var(--muted);
+  }
   textarea#output {
     width: 100%;
     max-width: 36rem;
@@ -123,14 +138,22 @@
 </head>
 <body>
   <h1>Stroke recorder</h1>
-  <p class="sub">Pick a letter, draw its strokes with the mouse (one drag = one stroke, in order), then copy the result into <code>letters-data.js</code>. The faded gray letter, if any, is the current hand-authored version for reference.</p>
+  <p class="sub">Pick a letter, draw its strokes with the mouse (one drag = one stroke, in order), then copy the result into <code>letters-data.js</code> (uppercase/print) or <code>cursive-letters-data.js</code> (lowercase/cursive). The faded gray letter behind the canvas is a drawing template - either the current hand-authored version, or the real letterform from a Serbian cursive font, to trace over.</p>
+
+  <div class="toggle-row">
+    <span class="toggle-row-label">Letter set:</span>
+    <label class="toggle"><input type="radio" name="letterSet" value="upper" checked> Uppercase (print)</label>
+    <label class="toggle"><input type="radio" name="letterSet" value="lower"> Lowercase (cursive)</label>
+  </div>
 
   <div class="letter-picker" id="letterPicker"></div>
 
-  <label class="toggle">
-    <input type="checkbox" id="refToggle" checked>
-    Show existing letter as reference
-  </label>
+  <div class="toggle-row">
+    <span class="toggle-row-label">Reference:</span>
+    <label class="toggle"><input type="radio" name="refStyle" value="hand" checked> Hand-authored</label>
+    <label class="toggle"><input type="radio" name="refStyle" value="cursive"> Cursive font</label>
+    <label class="toggle"><input type="radio" name="refStyle" value="none"> None</label>
+  </div>
   <label class="toggle">
     <input type="checkbox" id="straightenToggle" checked>
     Straighten near-straight strokes
@@ -162,6 +185,7 @@
   </div>
 
 <script src="letters-data.js"></script>
+<script src="cursive-letters-data.js"></script>
 <script>
   const SIZE = 320;
   const SCALE = SIZE / 200; // canvas pixels per logical grid unit
@@ -172,14 +196,32 @@
   const recCtx = recCanvas.getContext('2d');
   const drawCanvas = document.getElementById('drawCanvas');
   const drawCtx = drawCanvas.getContext('2d');
-  const refToggle = document.getElementById('refToggle');
+  const refStyleInputs = document.querySelectorAll('input[name="refStyle"]');
+  function refStyle() {
+    return document.querySelector('input[name="refStyle"]:checked').value;
+  }
+  const letterSetInputs = document.querySelectorAll('input[name="letterSet"]');
+  function letterSet() {
+    return document.querySelector('input[name="letterSet"]:checked').value;
+  }
+  // Uppercase/print reuses the existing letters-data.js tables; lowercase
+  // targets the new cursive-letters-data.js tables instead. Recording keys
+  // are just the letter glyph, and Cyrillic upper/lowercase letters are
+  // distinct codepoints, so both sets' recordings can coexist without
+  // collisions in the same `recordings` object.
+  function letterOrder() {
+    return letterSet() === 'lower' ? CURSIVE_LETTER_ORDER : LETTER_ORDER;
+  }
+  function existingLetters() {
+    return letterSet() === 'lower' ? CURSIVE_LETTERS : LETTERS;
+  }
   const straightenToggle = document.getElementById('straightenToggle');
   const output = document.getElementById('output');
   const playStatus = document.getElementById('playStatus');
 
   // In-memory only: recorded strokes per letter, in logical 0-200 units.
   const recordings = {};
-  let currentLetter = LETTER_ORDER[0];
+  let currentLetter = letterOrder()[0];
 
   function toCanvas([x, y]) {
     return [x * SCALE, y * SCALE];
@@ -201,10 +243,31 @@
     ctx.stroke();
   }
 
-  function renderReference() {
+  // A generation guard for the async cursive-font path: font loading can
+  // finish after the user has already switched letters/styles, so a stale
+  // load shouldn't clear/redraw over whatever's current by then.
+  let refGeneration = 0;
+
+  async function renderReference() {
+    const myGeneration = ++refGeneration;
+    const style = refStyle();
     refCtx.clearRect(0, 0, SIZE, SIZE);
-    if (!refToggle.checked) return;
-    const existing = LETTERS[currentLetter];
+    if (style === 'none') return;
+
+    if (style === 'cursive') {
+      const fontSize = 220;
+      await document.fonts.load(`${fontSize}px LovelySofia`);
+      if (myGeneration !== refGeneration) return;
+      refCtx.clearRect(0, 0, SIZE, SIZE);
+      refCtx.fillStyle = '#d8d3c8';
+      refCtx.font = `${fontSize}px LovelySofia`;
+      refCtx.textAlign = 'center';
+      refCtx.textBaseline = 'middle';
+      refCtx.fillText(currentLetter, SIZE / 2, SIZE / 2 + 14);
+      return;
+    }
+
+    const existing = existingLetters()[currentLetter];
     if (!existing) return;
     for (const stroke of existing.strokes) {
       drawPolyline(refCtx, stroke, '#e5e1d8', 10);
@@ -344,19 +407,41 @@
   }
 
   const letterPicker = document.getElementById('letterPicker');
-  const letterButtons = [];
-  for (const letter of LETTER_ORDER) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'letter-btn';
-    btn.textContent = letter;
-    btn.dataset.letter = letter;
-    btn.addEventListener('click', () => selectLetter(letter));
-    letterPicker.appendChild(btn);
-    letterButtons.push(btn);
+  let letterButtons = [];
+  function rebuildLetterPicker() {
+    letterPicker.innerHTML = '';
+    letterButtons = [];
+    for (const letter of letterOrder()) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'letter-btn';
+      btn.textContent = letter;
+      btn.dataset.letter = letter;
+      btn.addEventListener('click', () => selectLetter(letter));
+      letterPicker.appendChild(btn);
+      letterButtons.push(btn);
+    }
+    updatePickerBadges();
   }
+  rebuildLetterPicker();
 
-  refToggle.addEventListener('change', renderReference);
+  for (const input of refStyleInputs) input.addEventListener('change', renderReference);
+
+  // Switching letter set swaps in a different letter list and reference
+  // data source entirely, so the picker is rebuilt and selection resets to
+  // that set's first letter. The cursive/lowercase set starts out with no
+  // hand-authored data at all, so default its reference to the cursive font
+  // instead of the (empty) hand-authored view.
+  for (const input of letterSetInputs) {
+    input.addEventListener('change', () => {
+      rebuildLetterPicker();
+      const cursiveRadio = document.querySelector('input[name="refStyle"][value="cursive"]');
+      const handRadio = document.querySelector('input[name="refStyle"][value="hand"]');
+      if (letterSet() === 'lower') cursiveRadio.checked = true;
+      else handRadio.checked = true;
+      selectLetter(letterOrder()[0]);
+    });
+  }
 
   // Recording: each pointer drag is one stroke. Points are captured at a
   // minimum on-screen distance apart (not every mousemove event) so strokes
