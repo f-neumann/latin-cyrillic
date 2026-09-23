@@ -9,6 +9,14 @@
     font-family: 'LovelySofia';
     src: url('fonts/LovelySofiaBG.otf') format('opentype');
   }
+  @font-face {
+    font-family: 'BadScript';
+    src: url('fonts/BadScript-Regular.ttf') format('truetype');
+  }
+  @font-face {
+    font-family: 'MarckScript';
+    src: url('fonts/MarckScript-Regular.ttf') format('truetype');
+  }
   :root {
     --bg: #f6f5f2;
     --ink: #1c1b19;
@@ -141,7 +149,7 @@
 </head>
 <body>
   <h1>Stroke recorder</h1>
-  <p class="sub">Pick a letter, draw its strokes with the mouse (one drag = one stroke, in order), then copy the result into <code>letters-data.js</code> (uppercase/print) or <code>cursive-letters-data.js</code> (lowercase/cursive). The faded gray letter behind the canvas is a drawing template - either the current hand-authored version, or the real letterform from a Serbian cursive font, to trace over. Or skip the freehand tracing: "Trace font shape" pulls the letterform's centerline straight out of the font image and offers it as one click-to-add candidate covering the whole letter (it doesn't know real pen order or direction yet - just the shape).</p>
+  <p class="sub">Pick a letter, draw its strokes with the mouse (one drag = one stroke, in order), then copy the result into <code>letters-data.js</code> (uppercase/print) or <code>cursive-letters-data.js</code> (lowercase/cursive). The faded gray letter behind the canvas is a drawing template - the current hand-authored version, a digital cursive font, or a scanned chart of the traditional/classic Serbian cursive letterforms - to trace over. Or skip the freehand tracing: "Trace reference shape" pulls the letterform's centerline straight out of whichever reference is showing and offers it as one click-to-add candidate covering the whole letter (it doesn't know real pen order or direction yet - just the shape).</p>
 
   <div class="toggle-row">
     <span class="toggle-row-label">Letter set:</span>
@@ -154,7 +162,10 @@
   <div class="toggle-row">
     <span class="toggle-row-label">Reference:</span>
     <label class="toggle"><input type="radio" name="refStyle" value="hand" checked> Hand-authored</label>
-    <label class="toggle"><input type="radio" name="refStyle" value="cursive"> Cursive font</label>
+    <label class="toggle"><input type="radio" name="refStyle" value="cursive"> Cursive font (Lovely Sofia)</label>
+    <label class="toggle"><input type="radio" name="refStyle" value="badscript"> Cursive font (Bad Script)</label>
+    <label class="toggle"><input type="radio" name="refStyle" value="marckscript"> Cursive font (Marck Script)</label>
+    <label class="toggle"><input type="radio" name="refStyle" value="classic"> Classic cursive (chart)</label>
     <label class="toggle"><input type="radio" name="refStyle" value="none"> None</label>
   </div>
   <label class="toggle">
@@ -163,7 +174,7 @@
   </label>
 
   <div class="controls">
-    <button type="button" class="action" id="traceBtn">Trace font shape</button>
+    <button type="button" class="action" id="traceBtn">Trace reference shape</button>
     <button type="button" class="action" id="clearTraceBtn">Clear trace</button>
     <span class="play-status" id="traceStatus"></span>
   </div>
@@ -211,10 +222,55 @@
   const traceCtx = traceCanvas.getContext('2d');
   const traceBtn = document.getElementById('traceBtn');
   const traceStatus = document.getElementById('traceStatus');
+  // Every selectable font-based reference (refStyle value -> its @font-face
+  // family plus a fontSize/yOffset tuned so the glyph fills the canvas
+  // nicely - different fonts have different em-box proportions, so these
+  // aren't all the same number). Adding another font later is just another
+  // entry here.
+  const FONT_REFERENCES = {
+    cursive: { family: 'LovelySofia', fontSize: 220, yOffset: 14 },
+    badscript: { family: 'BadScript', fontSize: 190, yOffset: 12 },
+    marckscript: { family: 'MarckScript', fontSize: 190, yOffset: 12 },
+  };
+
   const refStyleInputs = document.querySelectorAll('input[name="refStyle"]');
   function refStyle() {
     return document.querySelector('input[name="refStyle"]:checked').value;
   }
+
+  // Classic/traditional Serbian cursive reference: one scanned chart image
+  // (reference/classic-cursive-chart.png) with a grid of hand-written
+  // uppercase+lowercase pairs, one cell per letter, in the exact same
+  // 30-letter alphabetical order as LETTER_ORDER/CURSIVE_LETTER_ORDER - 5
+  // columns x 6 rows - so a letter's cell position is just its index into
+  // whichever of those arrays is active.
+  const CLASSIC_COLS = 5, CLASSIC_ROWS = 6;
+  const classicImg = new Image();
+  classicImg.src = 'reference/classic-cursive-chart.png';
+  const classicImgReady = new Promise((resolve) => {
+    if (classicImg.complete && classicImg.naturalWidth) resolve();
+    else classicImg.addEventListener('load', () => resolve());
+  });
+
+  function classicCellRect() {
+    const order = letterSet() === 'lower' ? CURSIVE_LETTER_ORDER : LETTER_ORDER;
+    const idx = order.indexOf(currentLetter);
+    if (idx === -1) return null;
+    const cellW = classicImg.naturalWidth / CLASSIC_COLS;
+    const cellH = classicImg.naturalHeight / CLASSIC_ROWS;
+    return { x: (idx % CLASSIC_COLS) * cellW, y: Math.floor(idx / CLASSIC_COLS) * cellH, w: cellW, h: cellH };
+  }
+
+  // Scales srcW x srcH to fit inside a dstSize x dstSize square, centered
+  // (same "contain" fit for any dstSize keeps the geometry proportional
+  // between the display-resolution and trace-resolution canvases, so a
+  // traced shape lines up with where the reference guide is drawn).
+  function containFit(srcW, srcH, dstSize) {
+    const scale = Math.min(dstSize / srcW, dstSize / srcH);
+    const w = srcW * scale, h = srcH * scale;
+    return { scale, w, h, x: (dstSize - w) / 2, y: (dstSize - h) / 2 };
+  }
+
   const letterSetInputs = document.querySelectorAll('input[name="letterSet"]');
   function letterSet() {
     return document.querySelector('input[name="letterSet"]:checked').value;
@@ -269,16 +325,45 @@
     refCtx.clearRect(0, 0, SIZE, SIZE);
     if (style === 'none') return;
 
-    if (style === 'cursive') {
-      const fontSize = 220;
-      await document.fonts.load(`${fontSize}px LovelySofia`);
+    if (FONT_REFERENCES[style]) {
+      const { family, fontSize, yOffset } = FONT_REFERENCES[style];
+      await document.fonts.load(`${fontSize}px ${family}`);
       if (myGeneration !== refGeneration) return;
       refCtx.clearRect(0, 0, SIZE, SIZE);
       refCtx.fillStyle = '#d8d3c8';
-      refCtx.font = `${fontSize}px LovelySofia`;
+      refCtx.font = `${fontSize}px ${family}`;
       refCtx.textAlign = 'center';
       refCtx.textBaseline = 'middle';
-      refCtx.fillText(currentLetter, SIZE / 2, SIZE / 2 + 14);
+      refCtx.fillText(currentLetter, SIZE / 2, SIZE / 2 + yOffset);
+      return;
+    }
+
+    if (style === 'classic') {
+      await classicImgReady;
+      if (myGeneration !== refGeneration) return;
+      refCtx.clearRect(0, 0, SIZE, SIZE);
+      const cell = classicCellRect();
+      if (!cell) return;
+      const fit = containFit(cell.w, cell.h, SIZE);
+      refCtx.globalAlpha = 0.4;
+      // Show just this letter-case's isolated half, same split used for
+      // tracing, so the guide matches every other reference (one glyph, not
+      // a pair) - but that split needs getImageData, which throws if this
+      // page was opened as a local file:// (see runFontTrace's catch for
+      // the full explanation), so fall back to the whole cell then.
+      try {
+        const split = splitClassicCell(cell);
+        const letterMask = split && (letterSet() === 'lower' ? split.rightMask : split.leftMask);
+        if (letterMask && letterMask.some(Boolean)) {
+          paintMaskToSplitCanvas(letterMask, split.w, split.h);
+          refCtx.drawImage(splitCanvas, 0, 0, split.w, split.h, fit.x, fit.y, fit.w, fit.h);
+        } else {
+          refCtx.drawImage(classicImg, cell.x, cell.y, cell.w, cell.h, fit.x, fit.y, fit.w, fit.h);
+        }
+      } catch (err) {
+        refCtx.drawImage(classicImg, cell.x, cell.y, cell.w, cell.h, fit.x, fit.y, fit.w, fit.h);
+      }
+      refCtx.globalAlpha = 1;
       return;
     }
 
@@ -446,14 +531,15 @@
   // Switching letter set swaps in a different letter list and reference
   // data source entirely, so the picker is rebuilt and selection resets to
   // that set's first letter. The cursive/lowercase set starts out with no
-  // hand-authored data at all, so default its reference to the cursive font
-  // instead of the (empty) hand-authored view.
+  // hand-authored data at all, so default its reference to the classic
+  // cursive chart (the most authentic source) instead of the (empty)
+  // hand-authored view.
   for (const input of letterSetInputs) {
     input.addEventListener('change', () => {
       rebuildLetterPicker();
-      const cursiveRadio = document.querySelector('input[name="refStyle"][value="cursive"]');
+      const classicRadio = document.querySelector('input[name="refStyle"][value="classic"]');
       const handRadio = document.querySelector('input[name="refStyle"][value="hand"]');
-      if (letterSet() === 'lower') cursiveRadio.checked = true;
+      if (letterSet() === 'lower') classicRadio.checked = true;
       else handRadio.checked = true;
       selectLetter(letterOrder()[0]);
     });
@@ -499,16 +585,37 @@
   traceOffscreen.height = TRACE_SIZE;
   const traceOffCtx = traceOffscreen.getContext('2d', { willReadFrequently: true });
 
+  // Small scratch canvas used to isolate one letter's ink out of a classic-
+  // chart cell at the image's native resolution (see splitClassicCell).
+  const splitCanvas = document.createElement('canvas');
+  const splitCtx = splitCanvas.getContext('2d', { willReadFrequently: true });
+
   // Candidate segments from the last trace: { points, hitPoints } both in
   // logical 0-200 units - `points` is the cleaned-up version (straightened
   // or densified) that gets stored if clicked, `hitPoints` is the plainer
   // simplified path used for click hit-testing.
   let traceSegments = [];
 
-  function imageToInkMask(ctx, w, h) {
+  // For the font-rendered glyph: transparent background, so ink coverage
+  // shows up as the alpha channel (antialiased edge pixels get partial
+  // alpha - that's fine, this just needs "was this pixel painted at all").
+  function imageToInkMaskByAlpha(ctx, w, h) {
     const { data } = ctx.getImageData(0, 0, w, h);
     const mask = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) mask[i] = data[i * 4 + 3] >= 96 ? 1 : 0;
+    return mask;
+  }
+
+  // For the scanned classic-cursive chart: an opaque photo/scan (dark ink
+  // on light paper, alpha is always 255), so ink has to be found by
+  // darkness instead of transparency.
+  function imageToInkMaskByLuminance(ctx, w, h, threshold) {
+    const { data } = ctx.getImageData(0, 0, w, h);
+    const mask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const lum = (data[i * 4] + data[i * 4 + 1] + data[i * 4 + 2]) / 3;
+      mask[i] = lum < threshold ? 1 : 0;
+    }
     return mask;
   }
 
@@ -623,6 +730,69 @@
       }
     }
     return components;
+  }
+
+  // Splits one classic-chart cell's ink into its uppercase and lowercase
+  // halves - not with a fixed left/right cut (which bleeds into whichever
+  // letter is wider, and breaks apart a letter's own disconnected marks,
+  // like the bar drawn over т/п), but by connected-component: every blob of
+  // ink in the cell is assigned to whichever of the cell's two largest blobs
+  // (the two main letter bodies) its center is nearest to. A letter's bar
+  // ends up grouped with its own body since it's drawn right above it, not
+  // near the other letter.
+  //
+  // The hand-drawn grid isn't pixel-perfect against this uniform cell math
+  // either, so a stray bit of a neighboring cell's ink sometimes lands
+  // inside this crop too - unlike a real stroke of the current letter, that
+  // bleed-in is cut off exactly at the crop edge, so (other than the two
+  // main letter bodies, which are trusted regardless) anything touching the
+  // border is dropped as bleed rather than assigned to a side.
+  function splitClassicCell(cell) {
+    const cw = Math.round(cell.w), ch = Math.round(cell.h);
+    splitCanvas.width = cw;
+    splitCanvas.height = ch;
+    splitCtx.clearRect(0, 0, cw, ch);
+    splitCtx.drawImage(classicImg, cell.x, cell.y, cell.w, cell.h, 0, 0, cw, ch);
+    const raw = imageToInkMaskByLuminance(splitCtx, cw, ch, 170);
+
+    const components = labelSkeletonComponents(raw, cw, ch).filter(px => px.length >= 20); // drop scan-noise specks
+    if (components.length < 2) return null; // can't tell the two letters apart
+
+    const touchesBorder = (pixels) => pixels.some(([x, y]) => x === 0 || y === 0 || x === cw - 1 || y === ch - 1);
+    const withInfo = components.map(pixels => ({
+      pixels,
+      cx: pixels.reduce((sum, [x]) => sum + x, 0) / pixels.length,
+      onBorder: touchesBorder(pixels),
+    }));
+    const bySize = withInfo.slice().sort((a, b) => b.pixels.length - a.pixels.length);
+    let [leftAnchor, rightAnchor] = [bySize[0], bySize[1]];
+    if (leftAnchor.cx > rightAnchor.cx) [leftAnchor, rightAnchor] = [rightAnchor, leftAnchor];
+    const kept = withInfo.filter(c => c === leftAnchor || c === rightAnchor || !c.onBorder);
+
+    const leftMask = new Uint8Array(cw * ch);
+    const rightMask = new Uint8Array(cw * ch);
+    for (const comp of kept) {
+      const target = Math.abs(comp.cx - leftAnchor.cx) < Math.abs(comp.cx - rightAnchor.cx) ? leftMask : rightMask;
+      for (const [x, y] of comp.pixels) target[y * cw + x] = 1;
+    }
+    return { leftMask, rightMask, w: cw, h: ch };
+  }
+
+  // Paints a w x h binary mask onto splitCanvas as solid black-on-white
+  // (resizing it first), for either re-reading as an ink mask (tracing) or
+  // drawing elsewhere (the on-screen reference guide).
+  function paintMaskToSplitCanvas(mask, w, h) {
+    splitCanvas.width = w;
+    splitCanvas.height = h;
+    const imgData = splitCtx.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) {
+      const on = mask[i] ? 0 : 255;
+      imgData.data[i * 4] = on;
+      imgData.data[i * 4 + 1] = on;
+      imgData.data[i * 4 + 2] = on;
+      imgData.data[i * 4 + 3] = 255;
+    }
+    splitCtx.putImageData(imgData, 0, 0);
   }
 
   // Builds a graph of this component's nodes (endpoints/junctions) and the
@@ -772,23 +942,85 @@
     traceStatus.textContent = '';
   }
 
+  // Renders the current letter at TRACE_SIZE resolution onto traceOffCtx
+  // and returns its ink mask, using whichever reference is currently
+  // showing as the source. Returns null if that reference has nothing to
+  // trace (no font glyph / letter not in the classic chart's grid).
+  async function buildReferenceMask() {
+    const style = refStyle();
+
+    if (FONT_REFERENCES[style]) {
+      // Matches the on-screen rendering above, just scaled up to TRACE_SIZE.
+      const { family, fontSize: baseFontSize, yOffset } = FONT_REFERENCES[style];
+      const fontSize = baseFontSize * TRACE_SCALE;
+      await document.fonts.load(`${fontSize}px ${family}`);
+      traceOffCtx.clearRect(0, 0, TRACE_SIZE, TRACE_SIZE);
+      traceOffCtx.fillStyle = '#000';
+      traceOffCtx.font = `${fontSize}px ${family}`;
+      traceOffCtx.textAlign = 'center';
+      traceOffCtx.textBaseline = 'middle';
+      traceOffCtx.fillText(currentLetter, TRACE_SIZE / 2, TRACE_SIZE / 2 + yOffset * TRACE_SCALE);
+      const mask = imageToInkMaskByAlpha(traceOffCtx, TRACE_SIZE, TRACE_SIZE);
+      return mask.some(Boolean) ? mask : null;
+    }
+
+    if (style === 'classic') {
+      await classicImgReady;
+      const cell = classicCellRect();
+      if (!cell) return null;
+      const split = splitClassicCell(cell);
+      if (!split) return null;
+      const letterMask = letterSet() === 'lower' ? split.rightMask : split.leftMask;
+      if (!letterMask.some(Boolean)) return null;
+
+      // Paint just this letter's isolated pixels (solid black on white)
+      // back onto the split canvas, then scale that up to TRACE_SIZE with
+      // the same contain-fit used for the on-screen whole-cell guide, so
+      // the traced shape lines up with it.
+      paintMaskToSplitCanvas(letterMask, split.w, split.h);
+
+      const fit = containFit(cell.w, cell.h, TRACE_SIZE);
+      // Fill white first, not just clear - a cleared canvas is transparent
+      // black, and imageToInkMaskByLuminance ignores alpha, so the
+      // letterboxed padding around a non-square fit would otherwise read
+      // as solid ink.
+      traceOffCtx.fillStyle = '#fff';
+      traceOffCtx.fillRect(0, 0, TRACE_SIZE, TRACE_SIZE);
+      traceOffCtx.drawImage(splitCanvas, 0, 0, split.w, split.h, fit.x, fit.y, fit.w, fit.h);
+      const mask = imageToInkMaskByLuminance(traceOffCtx, TRACE_SIZE, TRACE_SIZE, 170);
+      return mask.some(Boolean) ? mask : null;
+    }
+
+    return null; // 'hand' / 'none' - no reliable source to auto-trace
+  }
+
   async function runFontTrace() {
+    if (!FONT_REFERENCES[refStyle()] && refStyle() !== 'classic') {
+      const current = { hand: 'Hand-authored', none: 'None' }[refStyle()];
+      traceStatus.textContent = `Switch the reference to one of the "Cursive font" options or "Classic cursive (chart)" first - there's nothing to trace from "${current}".`;
+      return;
+    }
     traceStatus.textContent = 'Tracing…';
     clearTraceCandidates();
     await new Promise(requestAnimationFrame); // let the "Tracing…" status paint before the synchronous work below
 
-    const fontSize = 220 * TRACE_SCALE; // matches the cursive-reference rendering below, scaled up to TRACE_SIZE
-    await document.fonts.load(`${fontSize}px LovelySofia`);
-    traceOffCtx.clearRect(0, 0, TRACE_SIZE, TRACE_SIZE);
-    traceOffCtx.fillStyle = '#000';
-    traceOffCtx.font = `${fontSize}px LovelySofia`;
-    traceOffCtx.textAlign = 'center';
-    traceOffCtx.textBaseline = 'middle';
-    traceOffCtx.fillText(currentLetter, TRACE_SIZE / 2, TRACE_SIZE / 2 + 14 * TRACE_SCALE);
-
-    const mask = imageToInkMask(traceOffCtx, TRACE_SIZE, TRACE_SIZE);
-    if (!mask.some(Boolean)) {
-      traceStatus.textContent = `No glyph found for '${currentLetter}' in the cursive font.`;
+    let mask;
+    try {
+      mask = await buildReferenceMask();
+    } catch (err) {
+      // The classic-chart path reads pixel data back out of a canvas the
+      // reference image was drawn onto - browsers refuse that ("tainted
+      // canvas") when the page itself was opened as a local file:// rather
+      // than served over http(s), even though drawing (not reading) the
+      // same image for display works fine either way. Font-based tracing
+      // doesn't hit this (it draws text, not an image file).
+      traceStatus.textContent = /tainted|cross-origin/i.test(err.message)
+        ? `Can't read image data from a page opened as a local file - serve this folder over http instead (e.g. "python3 -m http.server" in it, then open localhost), or use it via GitHub Pages.`
+        : `Tracing failed: ${err.message}`;
+      return;
+    }
+    if (!mask) {
+      traceStatus.textContent = `No usable glyph found for '${currentLetter}' in the current reference.`;
       return;
     }
     const skeleton = zhangSuenThin(mask, TRACE_SIZE, TRACE_SIZE);
