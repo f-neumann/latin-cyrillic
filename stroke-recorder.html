@@ -79,7 +79,7 @@
     top: 0;
     left: 0;
   }
-  #refCanvas, #recCanvas { pointer-events: none; }
+  #refCanvas, #recCanvas, #traceCanvas { pointer-events: none; }
   .controls {
     display: flex;
     flex-wrap: wrap;
@@ -130,15 +130,18 @@
     color: var(--ink);
   }
   .play-status {
+    display: inline-block;
     font-size: .82rem;
     color: var(--muted);
     align-self: center;
+    min-height: 2.4em;
+    max-width: 22rem;
   }
 </style>
 </head>
 <body>
   <h1>Stroke recorder</h1>
-  <p class="sub">Pick a letter, draw its strokes with the mouse (one drag = one stroke, in order), then copy the result into <code>letters-data.js</code> (uppercase/print) or <code>cursive-letters-data.js</code> (lowercase/cursive). The faded gray letter behind the canvas is a drawing template - either the current hand-authored version, or the real letterform from a Serbian cursive font, to trace over.</p>
+  <p class="sub">Pick a letter, draw its strokes with the mouse (one drag = one stroke, in order), then copy the result into <code>letters-data.js</code> (uppercase/print) or <code>cursive-letters-data.js</code> (lowercase/cursive). The faded gray letter behind the canvas is a drawing template - either the current hand-authored version, or the real letterform from a Serbian cursive font, to trace over. Or skip the freehand tracing: "Trace font shape" pulls the letterform's centerline straight out of the font image and offers it as one click-to-add candidate covering the whole letter (it doesn't know real pen order or direction yet - just the shape).</p>
 
   <div class="toggle-row">
     <span class="toggle-row-label">Letter set:</span>
@@ -159,9 +162,16 @@
     Straighten near-straight strokes
   </label>
 
+  <div class="controls">
+    <button type="button" class="action" id="traceBtn">Trace font shape</button>
+    <button type="button" class="action" id="clearTraceBtn">Clear trace</button>
+    <span class="play-status" id="traceStatus"></span>
+  </div>
+
   <div class="canvas-wrap">
     <canvas id="refCanvas" width="320" height="320"></canvas>
     <canvas id="recCanvas" width="320" height="320"></canvas>
+    <canvas id="traceCanvas" width="320" height="320"></canvas>
     <canvas id="drawCanvas" width="320" height="320"></canvas>
   </div>
 
@@ -171,6 +181,7 @@
     <button type="button" class="action" id="makeVerticalBtn">Make vertical</button>
     <button type="button" class="action" id="makeHorizontalBtn">Make horizontal</button>
     <button type="button" class="action" id="curveifyBtn">Curve-ify last stroke</button>
+    <button type="button" class="action" id="reverseLastBtn">Reverse last stroke</button>
     <button type="button" class="action" id="undoBtn">Undo last stroke</button>
     <button type="button" class="action" id="clearBtn">Clear this letter</button>
     <button type="button" class="action" id="copyOneBtn">Copy this letter</button>
@@ -196,6 +207,10 @@
   const recCtx = recCanvas.getContext('2d');
   const drawCanvas = document.getElementById('drawCanvas');
   const drawCtx = drawCanvas.getContext('2d');
+  const traceCanvas = document.getElementById('traceCanvas');
+  const traceCtx = traceCanvas.getContext('2d');
+  const traceBtn = document.getElementById('traceBtn');
+  const traceStatus = document.getElementById('traceStatus');
   const refStyleInputs = document.querySelectorAll('input[name="refStyle"]');
   function refStyle() {
     return document.querySelector('input[name="refStyle"]:checked').value;
@@ -404,6 +419,7 @@
     for (const b of letterButtons) b.classList.toggle('active', b.dataset.letter === letter);
     renderReference();
     renderRecorded();
+    clearTraceCandidates(); // a previous letter's trace candidates don't apply to the new one
   }
 
   const letterPicker = document.getElementById('letterPicker');
@@ -457,9 +473,367 @@
 
   const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
 
+  // --- Trace font shape -----------------------------------------------
+  // Freehand mouse tracing is slow and imprecise. This pulls the letter's
+  // centerline directly out of the cursive font's own rendering instead:
+  // render the glyph to an offscreen canvas, threshold it to an ink mask,
+  // thin that mask down to a 1px skeleton (Zhang-Suen), then walk the
+  // skeleton into a handful of polyline segments. Those show up as
+  // clickable colored candidates on top of the drawing canvas - clicking
+  // one records it as a stroke, same as a hand-drawn one.
+  //
+  // This does NOT know real pen order or direction (a skeleton has no
+  // sense of "which way the hand moved") - it only recovers *shape*.
+  // Segments come out in whatever order the trace happened to walk them,
+  // so use "Reverse last stroke" if one comes out backwards, and click
+  // multiple segments in your own intended drawing order.
+  const TRACE_SIZE = 480; // offscreen render resolution, higher than the display canvas for a cleaner skeleton
+  const TRACE_SCALE = TRACE_SIZE / SIZE;
+  const PIXEL_TO_LOGICAL = 1 / (TRACE_SCALE * SCALE); // offscreen px -> logical 0-200 units
+  const MIN_SEGMENT_PIXELS = 12; // drop thinning-noise spurs shorter than this (offscreen px)
+  const TRACE_HIT_RADIUS = 6; // logical units - how close a click must land on a candidate
+  const TRACE_COLORS = ['#3a6ea5', '#a55a3a', '#3aa572', '#8a3aa5', '#a5973a', '#3a97a5'];
+
+  const traceOffscreen = document.createElement('canvas');
+  traceOffscreen.width = TRACE_SIZE;
+  traceOffscreen.height = TRACE_SIZE;
+  const traceOffCtx = traceOffscreen.getContext('2d', { willReadFrequently: true });
+
+  // Candidate segments from the last trace: { points, hitPoints } both in
+  // logical 0-200 units - `points` is the cleaned-up version (straightened
+  // or densified) that gets stored if clicked, `hitPoints` is the plainer
+  // simplified path used for click hit-testing.
+  let traceSegments = [];
+
+  function imageToInkMask(ctx, w, h) {
+    const { data } = ctx.getImageData(0, 0, w, h);
+    const mask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) mask[i] = data[i * 4 + 3] >= 96 ? 1 : 0;
+    return mask;
+  }
+
+  // Zhang-Suen thinning: iteratively erodes the filled glyph's boundary
+  // pixels (in two alternating sub-passes) until only a 1px-wide skeleton
+  // remains, per the standard published algorithm.
+  function zhangSuenThin(mask, w, h) {
+    const img = mask.slice();
+    const at = (x, y) => img[y * w + x];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const subPass of [0, 1]) {
+        const toClear = [];
+        for (let y = 1; y < h - 1; y++) {
+          for (let x = 1; x < w - 1; x++) {
+            if (!at(x, y)) continue;
+            const n = [at(x, y - 1), at(x + 1, y - 1), at(x + 1, y), at(x + 1, y + 1),
+                       at(x, y + 1), at(x - 1, y + 1), at(x - 1, y), at(x - 1, y - 1)];
+            const B = n.reduce((a, b) => a + b, 0);
+            if (B < 2 || B > 6) continue;
+            let A = 0;
+            for (let i = 0; i < 8; i++) if (n[i] === 0 && n[(i + 1) % 8] === 1) A++;
+            if (A !== 1) continue;
+            const [P2, P4, P6, P8] = [n[0], n[2], n[4], n[6]];
+            if (subPass === 0) {
+              if (P2 * P4 * P6 !== 0 || P4 * P6 * P8 !== 0) continue;
+            } else {
+              if (P2 * P4 * P8 !== 0 || P2 * P6 * P8 !== 0) continue;
+            }
+            toClear.push(y * w + x);
+          }
+        }
+        if (toClear.length) { changed = true; for (const i of toClear) img[i] = 0; }
+      }
+    }
+    return img;
+  }
+
+  function skeletonNeighbors(img, w, h, x, y) {
+    const pts = [];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        if (img[ny * w + nx]) pts.push([nx, ny]);
+      }
+    }
+    return pts;
+  }
+
+  // Walks a chain of degree-2 skeleton pixels starting at `first` (coming
+  // from `start`) until it reaches another endpoint/junction, or - for a
+  // closed loop with no junctions at all - back to `stopAt`.
+  function walkSkeletonChain(img, w, h, start, first, stopAt) {
+    const path = [start, first];
+    let prev = start, cur = first;
+    while (true) {
+      if (stopAt && cur[0] === stopAt[0] && cur[1] === stopAt[1]) break;
+      const neigh = skeletonNeighbors(img, w, h, cur[0], cur[1]);
+      if (neigh.length !== 2) break; // reached an endpoint/junction node
+      const next = neigh.find(p => !(p[0] === prev[0] && p[1] === prev[1]));
+      if (!next) break;
+      path.push(next);
+      prev = cur;
+      cur = next;
+    }
+    return path;
+  }
+
+  // Splits the skeleton into polyline segments between its nodes (pixels
+  // with 1 neighbor = endpoint, or 3+ = junction/crossing). Any pixels left
+  // over afterwards belong to a pure closed loop (every pixel degree 2,
+  // e.g. a letter like the loop of 'o') and get traced as one closed path.
+  //
+  // A cursive letter is meant to be (mostly) one continuous pen path, so
+  // rather than handing back one candidate per edge-between-junctions (which
+  // chops a single letter into a handful of disconnected-looking pieces),
+  // traceWholeShapes() below walks each connected blob of ink as ONE
+  // polyline covering every pixel of it, backtracking (retracing already-
+  // drawn pixels) whenever it needs to reach a branch it hasn't visited yet.
+  // That's the only way to represent a branching shape as a single
+  // unbroken line - it doesn't yet know which branch a real pen would draw
+  // first, or where it would lift and restart, just that it's all one shape.
+  // Splitting a traced shape into a cleaner multi-stroke pen path (letting
+  // you choose where the "lifts" go) is a reasonable next step, deferred
+  // for now per the plan to keep this first pass to "capture the shape".
+  function labelSkeletonComponents(img, w, h) {
+    const labelOf = new Int32Array(w * h).fill(-1);
+    const components = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const idx = y * w + x;
+        if (!img[idx] || labelOf[idx] !== -1) continue;
+        const compId = components.length;
+        const pixels = [];
+        const stack = [[x, y]];
+        labelOf[idx] = compId;
+        while (stack.length) {
+          const [cx, cy] = stack.pop();
+          pixels.push([cx, cy]);
+          for (const [nx, ny] of skeletonNeighbors(img, w, h, cx, cy)) {
+            const nIdx = ny * w + nx;
+            if (labelOf[nIdx] === -1) {
+              labelOf[nIdx] = compId;
+              stack.push([nx, ny]);
+            }
+          }
+        }
+        components.push(pixels);
+      }
+    }
+    return components;
+  }
+
+  // Builds a graph of this component's nodes (endpoints/junctions) and the
+  // skeleton-chain "edges" between them (both directions, so traversal can
+  // walk into an edge from either end).
+  function buildComponentGraph(img, w, h, pixels) {
+    const key = ([x, y]) => `${x},${y}`;
+    const nodes = pixels.filter(([x, y]) => {
+      const deg = skeletonNeighbors(img, w, h, x, y).length;
+      return deg === 1 || deg >= 3;
+    });
+    if (!nodes.length) return null; // pure closed loop - no junctions/endpoints at all
+    const adjacency = new Map(nodes.map(n => [key(n), []]));
+    const visited = new Set();
+    const edgeKey = (a, b) => {
+      const ai = a[1] * w + a[0], bi = b[1] * w + b[0];
+      return ai < bi ? `${ai}-${bi}` : `${bi}-${ai}`;
+    };
+    for (const node of nodes) {
+      for (const n of skeletonNeighbors(img, w, h, node[0], node[1])) {
+        const ek = edgeKey(node, n);
+        if (visited.has(ek)) continue;
+        const path = walkSkeletonChain(img, w, h, node, n);
+        for (let i = 0; i < path.length - 1; i++) visited.add(edgeKey(path[i], path[i + 1]));
+        const to = path[path.length - 1];
+        adjacency.get(key(node)).push({ to, path, edgeId: ek });
+        adjacency.get(key(to)).push({ to: node, path: path.slice().reverse(), edgeId: ek });
+      }
+    }
+    return { nodes, adjacency };
+  }
+
+  // Depth-first walk that visits every edge of the graph, retracing
+  // (walking back over already-drawn pixels) whenever it needs to return to
+  // an earlier branch point to reach one of its other unvisited edges -
+  // the result is a single continuous polyline covering the whole shape.
+  function traverseGraphAsSingleStroke(adjacency, start) {
+    const visitedEdges = new Set();
+    const key = ([x, y]) => `${x},${y}`;
+    const output = [start];
+    (function dfs(nodeKey) {
+      for (const edge of adjacency.get(nodeKey) || []) {
+        if (visitedEdges.has(edge.edgeId)) continue;
+        visitedEdges.add(edge.edgeId);
+        for (const p of edge.path.slice(1)) output.push(p);
+        dfs(key(edge.to));
+        for (const p of edge.path.slice(0, -1).reverse()) output.push(p);
+      }
+    })(key(start));
+    return output;
+  }
+
+  // Traces the whole thinned glyph as one polyline per connected blob of
+  // ink (almost always just one, for a single connected cursive letter).
+  function traceWholeShapes(img, w, h) {
+    const shapes = [];
+    for (const pixels of labelSkeletonComponents(img, w, h)) {
+      if (pixels.length < MIN_SEGMENT_PIXELS) continue; // thinning-noise speck
+      const graph = buildComponentGraph(img, w, h, pixels);
+      if (!graph) {
+        // Pure closed loop: no endpoints/junctions, just walk it all the
+        // way around back to the start.
+        const start = pixels[0];
+        const neigh = skeletonNeighbors(img, w, h, start[0], start[1]);
+        shapes.push(neigh.length === 2 ? walkSkeletonChain(img, w, h, start, neigh[0], start) : pixels);
+        continue;
+      }
+      // Prefer starting from an endpoint (degree 1) - a natural tip of the
+      // letter - over a junction, so the single stroke begins somewhere a
+      // pen plausibly would rather than mid-shape.
+      const startNode = graph.nodes.find(([x, y]) => skeletonNeighbors(img, w, h, x, y).length === 1) || graph.nodes[0];
+      shapes.push(traverseGraphAsSingleStroke(graph.adjacency, startNode));
+    }
+    return shapes;
+  }
+
+  // Averages each point with its neighbors along the path to smooth out the
+  // 1px staircase steps thinning leaves behind, before simplifying.
+  function smoothPath(points, radius) {
+    return points.map((_, i) => {
+      let sx = 0, sy = 0, count = 0;
+      for (let d = -radius; d <= radius; d++) {
+        const p = points[i + d];
+        if (!p) continue;
+        sx += p[0]; sy += p[1]; count++;
+      }
+      return [sx / count, sy / count];
+    });
+  }
+
+  function pathLength(points) {
+    let len = 0;
+    for (let i = 1; i < points.length; i++) len += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+    return len;
+  }
+
+  // Douglas-Peucker simplification, reusing the same perpendicular-distance
+  // helper the freehand-straighten heuristic uses below.
+  function simplifyPath(points, epsilon) {
+    if (points.length < 3) return points.slice();
+    let maxDist = 0, splitAt = 0;
+    for (let i = 1; i < points.length - 1; i++) {
+      const d = perpendicularDistance(points[i], points[0], points[points.length - 1]);
+      if (d > maxDist) { maxDist = d; splitAt = i; }
+    }
+    if (maxDist <= epsilon) return [points[0], points[points.length - 1]];
+    const left = simplifyPath(points.slice(0, splitAt + 1), epsilon);
+    const right = simplifyPath(points.slice(splitAt), epsilon);
+    return left.slice(0, -1).concat(right);
+  }
+
+  function pointToSegmentDistance([px, py], [x1, y1], [x2, y2]) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return Math.hypot(px - x1, py - y1);
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  }
+
+  function hitTestTraceSegment(point) {
+    let best = null, bestDist = TRACE_HIT_RADIUS;
+    for (const seg of traceSegments) {
+      for (let i = 1; i < seg.hitPoints.length; i++) {
+        const d = pointToSegmentDistance(point, seg.hitPoints[i - 1], seg.hitPoints[i]);
+        if (d < bestDist) { bestDist = d; best = seg; }
+      }
+    }
+    return best;
+  }
+
+  function drawTraceCandidates() {
+    traceCtx.clearRect(0, 0, SIZE, SIZE);
+    traceSegments.forEach((seg, i) => {
+      const color = TRACE_COLORS[i % TRACE_COLORS.length];
+      drawPolyline(traceCtx, seg.points, color, 4);
+      const [sx, sy] = toCanvas(seg.points[0]);
+      traceCtx.fillStyle = color;
+      traceCtx.beginPath();
+      traceCtx.arc(sx, sy, 7, 0, Math.PI * 2);
+      traceCtx.fill();
+    });
+  }
+
+  function clearTraceCandidates() {
+    traceSegments = [];
+    drawTraceCandidates();
+    traceStatus.textContent = '';
+  }
+
+  async function runFontTrace() {
+    traceStatus.textContent = 'Tracing…';
+    clearTraceCandidates();
+    await new Promise(requestAnimationFrame); // let the "Tracing…" status paint before the synchronous work below
+
+    const fontSize = 220 * TRACE_SCALE; // matches the cursive-reference rendering below, scaled up to TRACE_SIZE
+    await document.fonts.load(`${fontSize}px LovelySofia`);
+    traceOffCtx.clearRect(0, 0, TRACE_SIZE, TRACE_SIZE);
+    traceOffCtx.fillStyle = '#000';
+    traceOffCtx.font = `${fontSize}px LovelySofia`;
+    traceOffCtx.textAlign = 'center';
+    traceOffCtx.textBaseline = 'middle';
+    traceOffCtx.fillText(currentLetter, TRACE_SIZE / 2, TRACE_SIZE / 2 + 14 * TRACE_SCALE);
+
+    const mask = imageToInkMask(traceOffCtx, TRACE_SIZE, TRACE_SIZE);
+    if (!mask.some(Boolean)) {
+      traceStatus.textContent = `No glyph found for '${currentLetter}' in the cursive font.`;
+      return;
+    }
+    const skeleton = zhangSuenThin(mask, TRACE_SIZE, TRACE_SIZE);
+    const rawShapes = traceWholeShapes(skeleton, TRACE_SIZE, TRACE_SIZE)
+      .map(seg => smoothPath(seg, 3))
+      .filter(seg => pathLength(seg) >= MIN_SEGMENT_PIXELS);
+
+    traceSegments = rawShapes.map(seg => {
+      const simplified = simplifyPath(seg, 3);
+      const logical = simplified.map(([x, y]) => [x * PIXEL_TO_LOGICAL, y * PIXEL_TO_LOGICAL]);
+      const points = (straightenToggle.checked && isNearlyStraight(logical))
+        ? [logical[0], logical[logical.length - 1]]
+        : densify(logical, Math.max(10, Math.min(50, logical.length)));
+      return { points, hitPoints: logical };
+    });
+
+    drawTraceCandidates();
+    traceStatus.textContent = traceSegments.length
+      ? traceSegments.length === 1
+        ? `Found the whole letter as one piece - click it on the canvas to add it as a single stroke.`
+        : `Found ${traceSegments.length} disconnected pieces (the glyph's ink isn't all touching) - click each to add it as its own stroke.`
+      : `Couldn't extract a usable shape for '${currentLetter}'.`;
+  }
+
+  traceBtn.addEventListener('click', runFontTrace);
+  document.getElementById('clearTraceBtn').addEventListener('click', clearTraceCandidates);
+
   drawCanvas.addEventListener('pointerdown', (e) => {
+    const point = toLogical(e.clientX, e.clientY);
+    const hit = traceSegments.length ? hitTestTraceSegment(point) : null;
+    if (hit) {
+      animGeneration++;
+      recordings[currentLetter] = recordings[currentLetter] || [];
+      recordings[currentLetter].push(hit.points);
+      traceSegments = traceSegments.filter(s => s !== hit);
+      drawTraceCandidates();
+      renderRecorded();
+      updatePickerBadges();
+      traceStatus.textContent = traceSegments.length
+        ? `Added. ${traceSegments.length} segment${traceSegments.length === 1 ? '' : 's'} left.`
+        : 'Added. All traced segments used.';
+      return;
+    }
     animGeneration++; // stop any in-flight replay so it doesn't fight with fresh drawing
-    liveStroke = [toLogical(e.clientX, e.clientY)];
+    liveStroke = [point];
     drawCanvas.setPointerCapture(e.pointerId);
   });
   drawCanvas.addEventListener('pointermove', (e) => {
@@ -607,6 +981,17 @@
   });
 
   document.getElementById('curveifyBtn').addEventListener('click', curveifyLastStroke);
+
+  // Traced (and occasionally hand-drawn) strokes can come out running the
+  // wrong way - a skeleton walk has no notion of which end a pen starts
+  // from - so this just flips the point order of the last stroke in place.
+  document.getElementById('reverseLastBtn').addEventListener('click', () => {
+    animGeneration++;
+    const strokes = recordings[currentLetter];
+    if (!strokes || !strokes.length) return;
+    strokes[strokes.length - 1] = strokes[strokes.length - 1].slice().reverse();
+    renderRecorded();
+  });
 
   document.getElementById('undoBtn').addEventListener('click', () => {
     animGeneration++; // stop any in-flight replay before mutating strokes
