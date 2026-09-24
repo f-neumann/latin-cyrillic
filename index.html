@@ -260,6 +260,28 @@
     color: var(--accent);
     font-weight: 600;
   }
+  .cursive-card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .6rem;
+    padding: .6rem .9rem;
+    min-height: 4.5rem;
+  }
+  .cursive-card canvas {
+    flex-shrink: 0;
+  }
+  .cursive-hint {
+    font-size: .85rem;
+    color: var(--muted);
+  }
+  .cursive-hint strong {
+    color: var(--accent);
+    font-size: 1.3rem;
+    font-weight: 600;
+  }
   footer {
     margin-top: 3rem;
     font-size: .78rem;
@@ -352,6 +374,14 @@
       <div class="tiles" id="tiles"></div>
     </div>
 
+    <div>
+      <label>Cursive replay</label>
+      <div class="cursive-card">
+        <canvas id="cursiveCanvas" width="160" height="160"></canvas>
+        <span class="cursive-hint" id="cursiveHint">Type a letter to see it handwritten.</span>
+      </div>
+    </div>
+
     <details class="collapsible" id="keyboardDetails" open>
       <summary>On-screen keyboard</summary>
       <div class="layout-toggle" id="layoutToggle">
@@ -375,6 +405,8 @@
     <a href="#" id="copyLink">Copy link to this word</a>
   </footer>
 
+<script src="letters-data.js"></script>
+<script src="cursive-letters-data.js"></script>
 <script>
   const DIGRAPHS = {
     'nj': 'њ', 'Nj': 'Њ', 'NJ': 'Њ',
@@ -670,6 +702,95 @@
     history.replaceState(null, '', url);
   }
 
+  // --- Cursive replay ---------------------------------------------------
+  // Animates the hand-captured cursive stroke data (cursive-letters-data.js,
+  // traced from the classic Serbian cursive chart) for whichever letter was
+  // just typed, right below the live conversion. Only lowercase forms have
+  // been captured so far, so every letter replays in lowercase cursive
+  // regardless of the case actually typed - typing capital "A" still
+  // replays lowercase cursive "а".
+  const cursiveCanvas = document.getElementById('cursiveCanvas');
+  const cursiveCtx = cursiveCanvas.getContext('2d');
+  const cursiveHint = document.getElementById('cursiveHint');
+  const CURSIVE_SIZE = 160;
+  const CURSIVE_SCALE = CURSIVE_SIZE / 200; // matches the shared 0-200 logical grid the stroke data is authored on
+  const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+
+  function cursiveDrawPolyline(points, width) {
+    if (points.length < 2) return;
+    cursiveCtx.beginPath();
+    cursiveCtx.lineJoin = 'round';
+    cursiveCtx.lineCap = 'round';
+    cursiveCtx.strokeStyle = accentColor;
+    cursiveCtx.lineWidth = width;
+    cursiveCtx.moveTo(points[0][0] * CURSIVE_SCALE, points[0][1] * CURSIVE_SCALE);
+    for (let i = 1; i < points.length; i++) {
+      cursiveCtx.lineTo(points[i][0] * CURSIVE_SCALE, points[i][1] * CURSIVE_SCALE);
+    }
+    cursiveCtx.stroke();
+  }
+
+  // A generation token invalidates any in-flight animation from a previous
+  // letter, since typing fast (or another render) shouldn't let a stale
+  // replay keep drawing over a newer one.
+  let cursiveGeneration = 0;
+
+  function playCursiveLetter(letter) {
+    cursiveGeneration++;
+    const myGeneration = cursiveGeneration;
+    cursiveCtx.clearRect(0, 0, CURSIVE_SIZE, CURSIVE_SIZE);
+
+    const entry = CURSIVE_LETTERS[letter];
+    if (!entry) {
+      cursiveHint.innerHTML = `No cursive capture yet for <strong>${letter}</strong>.`;
+      return;
+    }
+    cursiveHint.innerHTML = `<strong>${letter}</strong>`;
+
+    const strokes = entry.strokes.map(s => densify(s, 50));
+    const msPerStroke = 380, pauseBetween = 90;
+    let strokeIndex = 0;
+
+    function runStroke() {
+      if (myGeneration !== cursiveGeneration || strokeIndex >= strokes.length) return;
+      const points = strokes[strokeIndex];
+      const startTime = performance.now();
+
+      function frame(now) {
+        if (myGeneration !== cursiveGeneration) return;
+        const progress = Math.min(1, (now - startTime) / msPerStroke);
+        const upToIndex = Math.floor(progress * (points.length - 1));
+        cursiveCtx.clearRect(0, 0, CURSIVE_SIZE, CURSIVE_SIZE);
+        for (let i = 0; i < strokeIndex; i++) cursiveDrawPolyline(strokes[i], 4);
+        cursiveDrawPolyline(points.slice(0, upToIndex + 1), 4);
+        if (progress < 1) {
+          requestAnimationFrame(frame);
+        } else {
+          strokeIndex++;
+          setTimeout(runStroke, pauseBetween);
+        }
+      }
+      requestAnimationFrame(frame);
+    }
+    runStroke();
+  }
+
+  // Replays only for a letter that was just typed forward (input grew),
+  // not on backspace/edits or on initial page load from a shared link -
+  // "type a character, watch it get handwritten," not a passive preview.
+  let lastInputLength = input.value.length;
+  function maybeReplayCursive(parts) {
+    const grew = input.value.length > lastInputLength;
+    lastInputLength = input.value.length;
+    if (!grew || !parts.length) return;
+    const last = parts[parts.length - 1];
+    // In Latin->Cyrillic mode the result is already Cyrillic; in
+    // Cyrillic->Latin mode the source (what was actually typed) is.
+    const raw = mode === 'toCyrillic' ? last.res : last.src;
+    if (!/[Ѐ-ӿ]/.test(raw)) return; // space/punctuation/digit/unmapped Latin - leave the last replay showing
+    playCursiveLetter(raw.toLowerCase());
+  }
+
   function render() {
     const parts = convert(input.value);
     cyrillicEl.textContent = parts.map(p => p.res).join('');
@@ -681,6 +802,10 @@
       tile.innerHTML = `<span class="src">${p.src}</span><span class="res">${p.res}</span>`;
       tilesEl.appendChild(tile);
     }
+    // The cursive replay is a decorative add-on - a bug in it (or the data/
+    // font files it depends on failing to load) must never be able to take
+    // the actual Latin<->Cyrillic conversion down with it.
+    try { maybeReplayCursive(parts); } catch (err) { console.error('Cursive replay failed:', err); }
     syncUrl();
   }
 
