@@ -261,26 +261,29 @@
     font-weight: 600;
   }
   .cursive-card {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: .6rem;
     padding: .6rem .9rem;
-    min-height: 4.5rem;
-  }
-  .cursive-card canvas {
-    flex-shrink: 0;
   }
   .cursive-hint {
+    display: block;
     font-size: .85rem;
     color: var(--muted);
+    margin-bottom: .35rem;
+    min-height: 1.2em;
   }
   .cursive-hint strong {
     color: var(--accent);
-    font-size: 1.3rem;
     font-weight: 600;
+  }
+  .cursive-scroll {
+    overflow-x: auto;
+    /* scrolls to keep the newest letter in view as the word grows, without
+       ever forcing the page itself to scroll horizontally */
+  }
+  .cursive-scroll canvas {
+    display: block;
   }
   footer {
     margin-top: 3rem;
@@ -377,8 +380,10 @@
     <div>
       <label>Cursive replay</label>
       <div class="cursive-card">
-        <canvas id="cursiveCanvas" width="160" height="160"></canvas>
-        <span class="cursive-hint" id="cursiveHint">Type a letter to see it handwritten.</span>
+        <span class="cursive-hint" id="cursiveHint">Type a word to see it handwritten, letter by letter.</span>
+        <div class="cursive-scroll" id="cursiveScroll">
+          <canvas id="cursiveCanvas" width="1" height="150"></canvas>
+        </div>
       </div>
     </div>
 
@@ -704,50 +709,118 @@
 
   // --- Cursive replay ---------------------------------------------------
   // Animates the hand-captured cursive stroke data (cursive-letters-data.js,
-  // traced from the classic Serbian cursive chart) for whichever letter was
-  // just typed, right below the live conversion. Only lowercase forms have
-  // been captured so far, so every letter replays in lowercase cursive
-  // regardless of the case actually typed - typing capital "A" still
-  // replays lowercase cursive "а".
+  // traced from the classic Serbian cursive chart) for the current word as
+  // it's typed - each new letter is laid out after the previous ones and
+  // animated in, so the word visibly grows letter by letter. Only lowercase
+  // forms have been captured so far, so every letter replays in lowercase
+  // cursive regardless of the case actually typed.
+  //
+  // The captured letters have no shared baseline or x-height convention -
+  // each one's coordinates just reflect wherever it happened to sit inside
+  // its own cropped cell of the classic-chart photo (bounding-box heights
+  // across the 30 letters range from 24 units for a short round letter like
+  // о up to 114 for a letter with both an ascender and descender like ђ).
+  // So laying letters out here works by treating each letter's own
+  // bounding box as its "advance width" (like normal text layout/kerning)
+  // and aligning every letter's bounding-box *bottom* to one shared line -
+  // that's a real approximation, not true baseline metadata: a letter with
+  // a genuine descender (р, у, ф...) ends up with its whole shape pulled up
+  // to sit on the line rather than dipping below it. Good enough to watch
+  // a word visibly form; actually bending one letter's stroke into the
+  // next (real ligature joins) is further out - this only positions
+  // already-separate letterforms next to each other.
   const cursiveCanvas = document.getElementById('cursiveCanvas');
   const cursiveCtx = cursiveCanvas.getContext('2d');
+  const cursiveScroll = document.getElementById('cursiveScroll');
   const cursiveHint = document.getElementById('cursiveHint');
-  const CURSIVE_SIZE = 160;
-  const CURSIVE_SCALE = CURSIVE_SIZE / 200; // matches the shared 0-200 logical grid the stroke data is authored on
+  const CURSIVE_HEIGHT = 150;
+  const CURSIVE_BASELINE = 122; // px from the top of the canvas that every letter's bounding-box bottom sits on
+  const CURSIVE_GAP = 16; // px between one letter's bounding box and the next
+  const CURSIVE_MARGIN = 10; // px before the first letter
   const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
 
-  function cursiveDrawPolyline(points, width) {
+  const cursiveBoxCache = new Map();
+  function cursiveLetterBox(letter) {
+    if (cursiveBoxCache.has(letter)) return cursiveBoxCache.get(letter);
+    const entry = CURSIVE_LETTERS[letter];
+    let box = null;
+    if (entry) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const stroke of entry.strokes) {
+        for (const [x, y] of stroke) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+      box = { minX, maxX, minY, maxY, width: maxX - minX };
+    }
+    cursiveBoxCache.set(letter, box);
+    return box;
+  }
+
+  // Lays a sequence of letters out left to right (each positioned by its
+  // own bounding-box width + a fixed gap, bottom-aligned to CURSIVE_BASELINE)
+  // and returns each one's translation offset plus the total width needed.
+  function layoutCursiveWord(letters) {
+    let cursor = CURSIVE_MARGIN;
+    const placed = [];
+    for (const letter of letters) {
+      const box = cursiveLetterBox(letter);
+      if (!box) { placed.push(null); continue; }
+      placed.push({ letter, offsetX: cursor - box.minX, offsetY: CURSIVE_BASELINE - box.maxY });
+      cursor += box.width + CURSIVE_GAP;
+    }
+    return { placed, totalWidth: cursor };
+  }
+
+  function cursiveDrawPolylineAt(points, offsetX, offsetY, width) {
     if (points.length < 2) return;
     cursiveCtx.beginPath();
     cursiveCtx.lineJoin = 'round';
     cursiveCtx.lineCap = 'round';
     cursiveCtx.strokeStyle = accentColor;
     cursiveCtx.lineWidth = width;
-    cursiveCtx.moveTo(points[0][0] * CURSIVE_SCALE, points[0][1] * CURSIVE_SCALE);
-    for (let i = 1; i < points.length; i++) {
-      cursiveCtx.lineTo(points[i][0] * CURSIVE_SCALE, points[i][1] * CURSIVE_SCALE);
-    }
+    cursiveCtx.moveTo(points[0][0] + offsetX, points[0][1] + offsetY);
+    for (let i = 1; i < points.length; i++) cursiveCtx.lineTo(points[i][0] + offsetX, points[i][1] + offsetY);
     cursiveCtx.stroke();
   }
 
-  // A generation token invalidates any in-flight animation from a previous
-  // letter, since typing fast (or another render) shouldn't let a stale
-  // replay keep drawing over a newer one.
-  let cursiveGeneration = 0;
+  function drawCursiveLetterFull(placement) {
+    if (!placement) return;
+    const entry = CURSIVE_LETTERS[placement.letter];
+    for (const stroke of entry.strokes) cursiveDrawPolylineAt(stroke, placement.offsetX, placement.offsetY, 4);
+  }
 
-  function playCursiveLetter(letter) {
+  // A generation token invalidates any in-flight animation from a previous
+  // word/letter, since typing fast (or editing mid-word) shouldn't let a
+  // stale replay keep drawing over a newer one.
+  let cursiveGeneration = 0;
+  let cursiveWord = []; // the lowercase Cyrillic letters currently laid out on canvas
+
+  // Draws every letter up to (but not including) the last one instantly,
+  // then animates the last one stroke-by-stroke - used when the word grew
+  // by exactly one letter typed forward, so already-settled letters don't
+  // redraw/flicker on every keystroke.
+  function growCursiveWord(letters) {
     cursiveGeneration++;
     const myGeneration = cursiveGeneration;
-    cursiveCtx.clearRect(0, 0, CURSIVE_SIZE, CURSIVE_SIZE);
+    cursiveWord = letters;
 
-    const entry = CURSIVE_LETTERS[letter];
-    if (!entry) {
-      cursiveHint.innerHTML = `No cursive capture yet for <strong>${letter}</strong>.`;
-      return;
-    }
-    cursiveHint.innerHTML = `<strong>${letter}</strong>`;
+    const { placed, totalWidth } = layoutCursiveWord(letters);
+    cursiveCanvas.width = Math.max(1, totalWidth);
+    cursiveCanvas.height = CURSIVE_HEIGHT;
+    cursiveCtx.clearRect(0, 0, cursiveCanvas.width, cursiveCanvas.height);
+    cursiveScroll.scrollLeft = cursiveCanvas.width; // keep the growing edge in view
 
-    const strokes = entry.strokes.map(s => densify(s, 50));
+    for (let i = 0; i < placed.length - 1; i++) drawCursiveLetterFull(placed[i]);
+
+    const last = placed[placed.length - 1];
+    if (!last) { cursiveHint.innerHTML = `No cursive capture yet for <strong>${letters[letters.length - 1]}</strong>.`; return; }
+    cursiveHint.innerHTML = `<strong>${letters.join('')}</strong>`;
+
+    const strokes = CURSIVE_LETTERS[last.letter].strokes.map(s => densify(s, 50));
     const msPerStroke = 380, pauseBetween = 90;
     let strokeIndex = 0;
 
@@ -760,9 +833,10 @@
         if (myGeneration !== cursiveGeneration) return;
         const progress = Math.min(1, (now - startTime) / msPerStroke);
         const upToIndex = Math.floor(progress * (points.length - 1));
-        cursiveCtx.clearRect(0, 0, CURSIVE_SIZE, CURSIVE_SIZE);
-        for (let i = 0; i < strokeIndex; i++) cursiveDrawPolyline(strokes[i], 4);
-        cursiveDrawPolyline(points.slice(0, upToIndex + 1), 4);
+        cursiveCtx.clearRect(0, 0, cursiveCanvas.width, cursiveCanvas.height);
+        for (let i = 0; i < placed.length - 1; i++) drawCursiveLetterFull(placed[i]);
+        for (let i = 0; i < strokeIndex; i++) cursiveDrawPolylineAt(strokes[i], last.offsetX, last.offsetY, 4);
+        cursiveDrawPolylineAt(points.slice(0, upToIndex + 1), last.offsetX, last.offsetY, 4);
         if (progress < 1) {
           requestAnimationFrame(frame);
         } else {
@@ -775,20 +849,45 @@
     runStroke();
   }
 
-  // Replays only for a letter that was just typed forward (input grew),
-  // not on backspace/edits or on initial page load from a shared link -
-  // "type a character, watch it get handwritten," not a passive preview.
-  let lastInputLength = input.value.length;
+  // No animation - just lay out and draw every letter as-is. Used for
+  // backspace/edits, where replaying an animation would be more distracting
+  // than helpful.
+  function redrawCursiveWordStatic(letters) {
+    cursiveGeneration++; // stop any in-flight growth animation
+    cursiveWord = letters;
+    const { placed, totalWidth } = layoutCursiveWord(letters);
+    cursiveCanvas.width = Math.max(1, totalWidth);
+    cursiveCanvas.height = CURSIVE_HEIGHT;
+    cursiveCtx.clearRect(0, 0, cursiveCanvas.width, cursiveCanvas.height);
+    for (const placement of placed) drawCursiveLetterFull(placement);
+    cursiveHint.innerHTML = letters.length ? `<strong>${letters.join('')}</strong>` : 'Type a word to see it handwritten, letter by letter.';
+  }
+
+  // The current (trailing, still-being-typed) word's lowercase Cyrillic
+  // letters - walks backward from the end of `parts` to the last
+  // whitespace, then keeps only the Cyrillic-letter characters in between
+  // (skipping over anything else, e.g. a stray unmapped character).
+  function currentWordLetters(parts) {
+    let start = parts.length;
+    while (start > 0) {
+      const raw = mode === 'toCyrillic' ? parts[start - 1].res : parts[start - 1].src;
+      if (/^\s*$/.test(raw)) break;
+      start--;
+    }
+    const letters = [];
+    for (let i = start; i < parts.length; i++) {
+      const raw = mode === 'toCyrillic' ? parts[i].res : parts[i].src;
+      if (/[Ѐ-ӿ]/.test(raw)) letters.push(raw.toLowerCase());
+    }
+    return letters;
+  }
+
   function maybeReplayCursive(parts) {
-    const grew = input.value.length > lastInputLength;
-    lastInputLength = input.value.length;
-    if (!grew || !parts.length) return;
-    const last = parts[parts.length - 1];
-    // In Latin->Cyrillic mode the result is already Cyrillic; in
-    // Cyrillic->Latin mode the source (what was actually typed) is.
-    const raw = mode === 'toCyrillic' ? last.res : last.src;
-    if (!/[Ѐ-ӿ]/.test(raw)) return; // space/punctuation/digit/unmapped Latin - leave the last replay showing
-    playCursiveLetter(raw.toLowerCase());
+    const letters = currentWordLetters(parts);
+    if (letters.length === cursiveWord.length && letters.every((l, i) => l === cursiveWord[i])) return; // unchanged
+    const isGrowth = letters.length === cursiveWord.length + 1 && cursiveWord.every((l, i) => l === letters[i]);
+    if (isGrowth) growCursiveWord(letters);
+    else redrawCursiveWordStatic(letters);
   }
 
   function render() {
