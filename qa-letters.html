@@ -19,10 +19,13 @@
   <div class="grid" id="cursiveGrid"></div>
   <h2>Lowercase (cursive, Marck Script font) &mdash; cursive-letters-data-marckscript.js</h2>
   <div class="grid" id="cursiveMarckGrid"></div>
+  <h2>Lowercase (cursive, Lovely Sofia font) &mdash; cursive-letters-data-lovelysofia.js</h2>
+  <div class="grid" id="cursiveLovelySofiaGrid"></div>
 
 <script src="letters-data.js"></script>
 <script src="cursive-letters-data.js"></script>
 <script src="cursive-letters-data-marckscript.js"></script>
+<script src="cursive-letters-data-lovelysofia.js"></script>
 <script>
   const SIZE = 120;
   const SCALE = SIZE / 200;
@@ -64,6 +67,7 @@
   renderGrid(document.getElementById('grid'), LETTERS, LETTER_ORDER);
   renderGrid(document.getElementById('cursiveGrid'), CURSIVE_LETTERS, CURSIVE_LETTER_ORDER);
   renderGrid(document.getElementById('cursiveMarckGrid'), CURSIVE_LETTERS_MARCKSCRIPT, CURSIVE_LETTER_ORDER);
+  renderGrid(document.getElementById('cursiveLovelySofiaGrid'), CURSIVE_LETTERS_LOVELYSOFIA, CURSIVE_LETTER_ORDER);
 </script>
 </body>
 </html>
