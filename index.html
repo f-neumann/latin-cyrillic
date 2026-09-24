@@ -379,6 +379,10 @@
 
     <div>
       <label>Cursive replay</label>
+      <div class="layout-toggle" id="cursiveStyleToggle">
+        <button type="button" class="layout-btn active" data-style="classic">Classic chart</button>
+        <button type="button" class="layout-btn" data-style="marck">Marck Script</button>
+      </div>
       <div class="cursive-card">
         <span class="cursive-hint" id="cursiveHint">Type a word to see it handwritten, letter by letter.</span>
         <div class="cursive-scroll" id="cursiveScroll">
@@ -412,6 +416,7 @@
 
 <script src="letters-data.js"></script>
 <script src="cursive-letters-data.js"></script>
+<script src="cursive-letters-data-marckscript.js"></script>
 <script>
   const DIGRAPHS = {
     'nj': 'њ', 'Nj': 'Њ', 'NJ': 'Њ',
@@ -523,7 +528,7 @@
   const outputLabel = document.getElementById('outputLabel');
   const modeButtons = document.querySelectorAll('.mode-btn');
   const keyboardEl = document.getElementById('keyboard');
-  const layoutButtons = document.querySelectorAll('.layout-btn');
+  const layoutButtons = document.querySelectorAll('#layoutToggle .layout-btn');
 
   let mode = new URLSearchParams(location.search).get('mode') === 'toLatin' ? 'toLatin' : 'toCyrillic';
   let layout = 'qwerty';
@@ -733,16 +738,26 @@
   const cursiveCtx = cursiveCanvas.getContext('2d');
   const cursiveScroll = document.getElementById('cursiveScroll');
   const cursiveHint = document.getElementById('cursiveHint');
+  const cursiveStyleToggle = document.getElementById('cursiveStyleToggle');
   const CURSIVE_HEIGHT = 150;
   const CURSIVE_BASELINE = 122; // px from the top of the canvas that every letter's bounding-box bottom sits on
   const CURSIVE_GAP = 16; // px between one letter's bounding box and the next
   const CURSIVE_MARGIN = 10; // px before the first letter
   const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
 
-  const cursiveBoxCache = new Map();
+  // Two independently-captured stroke sets to compare/try, per letter -
+  // same 30-key shape, different source (a scanned traditional chart vs. a
+  // decorative Cyrillic script font), so everything below just reads
+  // whichever is currently selected rather than hardcoding one.
+  const CURSIVE_SOURCES = { classic: CURSIVE_LETTERS, marck: CURSIVE_LETTERS_MARCKSCRIPT };
+  let cursiveStyle = 'classic';
+  function currentCursiveLetters() { return CURSIVE_SOURCES[cursiveStyle]; }
+
+  const cursiveBoxCache = new Map(); // keyed "style:letter" - bounding boxes differ per source
   function cursiveLetterBox(letter) {
-    if (cursiveBoxCache.has(letter)) return cursiveBoxCache.get(letter);
-    const entry = CURSIVE_LETTERS[letter];
+    const cacheKey = `${cursiveStyle}:${letter}`;
+    if (cursiveBoxCache.has(cacheKey)) return cursiveBoxCache.get(cacheKey);
+    const entry = currentCursiveLetters()[letter];
     let box = null;
     if (entry) {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -756,7 +771,7 @@
       }
       box = { minX, maxX, minY, maxY, width: maxX - minX };
     }
-    cursiveBoxCache.set(letter, box);
+    cursiveBoxCache.set(cacheKey, box);
     return box;
   }
 
@@ -789,7 +804,7 @@
 
   function drawCursiveLetterFull(placement) {
     if (!placement) return;
-    const entry = CURSIVE_LETTERS[placement.letter];
+    const entry = currentCursiveLetters()[placement.letter];
     for (const stroke of entry.strokes) cursiveDrawPolylineAt(stroke, placement.offsetX, placement.offsetY, 4);
   }
 
@@ -820,7 +835,7 @@
     if (!last) { cursiveHint.innerHTML = `No cursive capture yet for <strong>${letters[letters.length - 1]}</strong>.`; return; }
     cursiveHint.innerHTML = `<strong>${letters.join('')}</strong>`;
 
-    const strokes = CURSIVE_LETTERS[last.letter].strokes.map(s => densify(s, 50));
+    const strokes = currentCursiveLetters()[last.letter].strokes.map(s => densify(s, 50));
     const msPerStroke = 380, pauseBetween = 90;
     let strokeIndex = 0;
 
@@ -888,6 +903,18 @@
     const isGrowth = letters.length === cursiveWord.length + 1 && cursiveWord.every((l, i) => l === letters[i]);
     if (isGrowth) growCursiveWord(letters);
     else redrawCursiveWordStatic(letters);
+  }
+
+  // Switching source (classic chart vs. Marck Script) redraws the current
+  // word as-is in the new style, statically - not a "just typed" moment,
+  // so no growth animation.
+  for (const btn of cursiveStyleToggle.querySelectorAll('.layout-btn')) {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.style === cursiveStyle) return;
+      cursiveStyle = btn.dataset.style;
+      for (const b of cursiveStyleToggle.querySelectorAll('.layout-btn')) b.classList.toggle('active', b.dataset.style === cursiveStyle);
+      redrawCursiveWordStatic(cursiveWord);
+    });
   }
 
   function render() {
