@@ -410,9 +410,9 @@
     <div>
       <label>Cursive replay</label>
       <div class="layout-toggle" id="cursiveStyleToggle">
-        <button type="button" class="layout-btn active" data-style="classic">Classic chart</button>
+        <button type="button" class="layout-btn" data-style="classic">Classic chart</button>
         <button type="button" class="layout-btn" data-style="marck">Marck Script</button>
-        <button type="button" class="layout-btn" data-style="lovelysofia">Lovely Sofia</button>
+        <button type="button" class="layout-btn active" data-style="lovelysofia">Lovely Sofia</button>
       </div>
       <div class="cursive-card">
         <span class="cursive-hint" id="cursiveHint">Type a word to see it handwritten, letter by letter.</span>
@@ -795,7 +795,7 @@
   // decorative Cyrillic script font), so everything below just reads
   // whichever is currently selected rather than hardcoding one.
   const CURSIVE_SOURCES = { classic: CURSIVE_LETTERS, marck: CURSIVE_LETTERS_MARCKSCRIPT, lovelysofia: CURSIVE_LETTERS_LOVELYSOFIA };
-  let cursiveStyle = 'classic';
+  let cursiveStyle = 'lovelysofia'; // most-liked in testing, so it's the default; classic chart and Marck Script are still one click away
   function currentCursiveLetters() { return CURSIVE_SOURCES[cursiveStyle]; }
 
   // The font-preview box (below) follows the same style toggle. "classic"
