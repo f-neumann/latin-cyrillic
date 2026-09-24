@@ -780,7 +780,13 @@
   const cursiveStyleToggle = document.getElementById('cursiveStyleToggle');
   const CURSIVE_HEIGHT = 150;
   const CURSIVE_BASELINE = 122; // px from the top of the canvas that every letter's bounding-box bottom sits on
-  const CURSIVE_GAP = 16; // px between one letter's bounding box and the next
+  // Kept small on purpose: Cyrillic cursive (like Latin cursive) is meant to
+  // read as continuous joined writing, so letters sit close with just a
+  // sliver of breathing room rather than the wide, evenly-spaced gaps of
+  // isolated print letters - there's no real stroke-to-stroke connection
+  // (see the header note above), but tight placement reads much closer to
+  // actual handwriting.
+  const CURSIVE_GAP = 2; // px between one letter's bounding box and the next
   const CURSIVE_MARGIN = 10; // px before the first letter
   const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
 
